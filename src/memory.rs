@@ -39,6 +39,17 @@ impl Machine {
     }
 }
 
+/// One process's contribution, kept so a model's cost can be attributed to the
+/// process that actually holds it rather than to the provider as a whole.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ProcessSample {
+    pub pid: u32,
+    /// `max(phys_footprint, rss)` for this process.
+    pub footprint_bytes: u64,
+    pub phys_footprint_bytes: Option<u64>,
+    pub rss_bytes: Option<u64>,
+}
+
 /// The processes attributable to one provider, and what they cost.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct ProcessTree {
@@ -50,6 +61,9 @@ pub struct ProcessTree {
     pub phys_footprint_bytes: Option<u64>,
     /// Component. Sees mmapped weights that `phys_footprint` does not.
     pub rss_bytes: Option<u64>,
+    /// Per-process breakdown. The estimator attributes a model to the largest
+    /// entry here rather than to the tree total.
+    pub processes: Vec<ProcessSample>,
 }
 
 /// The larger of the two metrics, because each is blind to something the
@@ -144,15 +158,23 @@ pub fn footprint_for_port(port: u16) -> Option<ProcessTree> {
 
     let (mut total, mut phys_total, mut rss_total) = (0u64, 0u64, 0u64);
     let mut any = false;
+    let mut samples = Vec::new();
     for pid in &pids {
         if let Some((phys, rss)) = usage(*pid) {
             // Per process, not per tree: a provider mixes an Electron shell
             // whose cost is anonymous with a backend whose cost is mmapped,
             // and taking the max of the two sums would lose one of them.
-            total += phys.max(rss);
+            let combined = phys.max(rss);
+            total += combined;
             phys_total += phys;
             rss_total += rss;
             any = true;
+            samples.push(ProcessSample {
+                pid: *pid,
+                footprint_bytes: combined,
+                phys_footprint_bytes: Some(phys),
+                rss_bytes: Some(rss),
+            });
         }
     }
 
@@ -161,6 +183,7 @@ pub fn footprint_for_port(port: u16) -> Option<ProcessTree> {
         footprint_bytes: any.then_some(total),
         phys_footprint_bytes: any.then_some(phys_total),
         rss_bytes: any.then_some(rss_total),
+        processes: samples,
     })
 }
 

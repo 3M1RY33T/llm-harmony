@@ -42,6 +42,16 @@ enum Command {
         #[arg(long)]
         live: bool,
     },
+    /// What a model costs, and whether it fits right now.
+    Estimate {
+        model: String,
+        #[arg(long)]
+        context: Option<u32>,
+        #[arg(long, value_name = "BYTES")]
+        reserve: Option<u64>,
+        #[arg(long)]
+        json: bool,
+    },
     /// Print a removal plan. Never executes.
     Rm {
         model: String,
@@ -126,6 +136,26 @@ fn main() -> ExitCode {
                 println!("{}", serde_json::to_string_pretty(&doc).unwrap());
             } else {
                 print!("{}", llm_harmony::render_ls::render_ls(&inv));
+            }
+            ExitCode::SUCCESS
+        }
+        Command::Estimate { model, context, reserve, json } => {
+            let machine = match Machine::read() {
+                Ok(m) => m,
+                Err(e) => {
+                    eprintln!("llm-harmony: {e}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            let corpus = llm_harmony::estimate::corpus::load_default();
+            let est = llm_harmony::estimate::estimator::for_model(&corpus, &model, context);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&est).unwrap());
+            } else {
+                print!(
+                    "{}",
+                    llm_harmony::render_estimate::render_estimate(&est, &machine, reserve)
+                );
             }
             ExitCode::SUCCESS
         }

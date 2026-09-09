@@ -114,6 +114,7 @@ mod tests {
                     footprint_bytes: Some(9_800_000_000),
                     phys_footprint_bytes: Some(9_800_000_000),
                     rss_bytes: Some(9_800_000_000),
+                    processes: Vec::new(),
                 },
                 ProviderRow {
                     kind: ProviderKind::Ollama,
@@ -123,6 +124,7 @@ mod tests {
                     footprint_bytes: Some(400_000_000),
                     phys_footprint_bytes: Some(400_000_000),
                     rss_bytes: Some(400_000_000),
+                    processes: Vec::new(),
                 },
                 ProviderRow {
                     kind: ProviderKind::LlamaCpp,
@@ -132,6 +134,7 @@ mod tests {
                     footprint_bytes: None,
                     phys_footprint_bytes: None,
                     rss_bytes: None,
+                    processes: Vec::new(),
                 },
             ],
         }

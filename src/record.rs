@@ -2,7 +2,16 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::ledger::{Ledger, Outcome};
+use crate::memory::ProcessSample;
 use crate::provider::{ProviderKind, State};
+
+/// Version of the *observation* record.
+///
+/// Deliberately not `ledger::SCHEMA`. That one is a contract with external
+/// consumers -- Delroy pins it and refuses a document it does not recognise --
+/// while this one versions a local corpus only this crate reads. Sharing a
+/// constant meant a change to either silently invalidated the other.
+pub const OBSERVATION_SCHEMA: u32 = 2;
 
 /// One provider's memory cost at one instant.
 ///
@@ -11,7 +20,7 @@ use crate::provider::{ProviderKind, State};
 /// attributable to exactly one model at a known context). Both are ordinary
 /// `status` output, which is why any caller can contribute them and no daemon
 /// is required to start collecting.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Observation {
     pub schema: u32,
     /// Unix seconds. Passed in rather than read, so this is testable.
@@ -28,6 +37,9 @@ pub struct Observation {
     pub footprint_bytes: u64,
     pub phys_footprint_bytes: Option<u64>,
     pub rss_bytes: Option<u64>,
+    /// Per-process breakdown. The largest entry is the model-bearing process.
+    #[serde(default)]
+    pub processes: Vec<ProcessSample>,
     pub machine_total_bytes: u64,
     pub machine_used_bytes: u64,
     pub swap_used_bytes: u64,
@@ -56,7 +68,7 @@ pub fn observations(ledger: &Ledger, at: u64) -> Vec<Observation> {
             };
 
             Some(Observation {
-                schema: crate::ledger::SCHEMA,
+                schema: OBSERVATION_SCHEMA,
                 at,
                 provider: row.kind,
                 loaded,
@@ -66,6 +78,7 @@ pub fn observations(ledger: &Ledger, at: u64) -> Vec<Observation> {
                 footprint_bytes,
                 phys_footprint_bytes: row.phys_footprint_bytes,
                 rss_bytes: row.rss_bytes,
+                processes: row.processes.clone(),
                 machine_total_bytes: ledger.machine.total_bytes,
                 machine_used_bytes: ledger.machine.used_bytes,
                 swap_used_bytes: ledger.machine.swap_used_bytes,
@@ -141,6 +154,7 @@ mod tests {
             footprint_bytes: fp,
             phys_footprint_bytes: fp,
             rss_bytes: fp,
+            processes: Vec::new(),
         }
     }
 
@@ -221,6 +235,50 @@ mod tests {
         assert!(observations(&l, 1).is_empty(), "an observation with no measurement is not one");
     }
 
+    fn row_with_processes(
+        kind: ProviderKind,
+        outcome: Outcome,
+        fp: Option<u64>,
+        procs: Vec<(u32, u64)>,
+    ) -> ProviderRow {
+        let mut r = row(kind, outcome, fp);
+        r.pids = procs.iter().map(|(p, _)| *p).collect();
+        r.processes = procs
+            .into_iter()
+            .map(|(pid, bytes)| crate::memory::ProcessSample {
+                pid,
+                footprint_bytes: bytes,
+                phys_footprint_bytes: Some(bytes),
+                rss_bytes: Some(bytes),
+            })
+            .collect();
+        r
+    }
+
+    /// The two schemas travel separately. Delroy pins `ledger::SCHEMA` and
+    /// would break on a bump; the corpus is read only by this crate. Sharing
+    /// one constant means a change to either silently invalidates the other.
+    #[test]
+    fn the_observation_schema_is_not_the_ledger_schema() {
+        let obs = OBSERVATION_SCHEMA;
+        let _ledger = crate::ledger::SCHEMA;
+        assert!(obs >= 1);
+    }
+
+    #[test]
+    fn an_observation_carries_its_per_process_breakdown() {
+        let l = ledger(vec![row_with_processes(
+            ProviderKind::LmStudio,
+            Outcome::Ok(vec![model("qwen3-14b", State::Loaded, Some(40960))]),
+            Some(9_600_000_000),
+            vec![(647, 300_000_000), (25164, 9_000_000_000), (3549, 150_000_000)],
+        )]);
+        let obs = observations(&l, 1);
+        assert_eq!(obs.len(), 1);
+        assert_eq!(obs[0].processes.len(), 3);
+        assert_eq!(obs[0].schema, OBSERVATION_SCHEMA);
+    }
+
     #[test]
     fn appending_preserves_what_is_already_there() {
         let dir = std::env::temp_dir().join(format!("harmony-rec-{}", std::process::id()));
@@ -240,7 +298,7 @@ mod tests {
         assert_eq!(lines.len(), 2, "append, never overwrite");
         for line in &lines {
             let v: serde_json::Value = serde_json::from_str(line).expect("each line is valid JSON");
-            assert_eq!(v["schema"], crate::ledger::SCHEMA);
+            assert_eq!(v["schema"], OBSERVATION_SCHEMA);
         }
         let _ = std::fs::remove_dir_all(&dir);
     }

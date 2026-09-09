@@ -18,6 +18,7 @@ fn tree(pids: Vec<u32>, bytes: Option<u64>) -> ProcessTree {
         footprint_bytes: bytes,
         phys_footprint_bytes: bytes,
         rss_bytes: bytes,
+        processes: Vec::new(),
     }
 }
 

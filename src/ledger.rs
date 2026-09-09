@@ -1,7 +1,7 @@
 use crate::adapters::adapter_for;
 use crate::config::Config;
 use crate::http::Http;
-use crate::memory::{footprint_for_port, port_from_url, Machine, ProcessTree};
+use crate::memory::{footprint_for_port, port_from_url, Machine, ProcessSample, ProcessTree};
 use crate::provider::{LoadedModel, ProbeError, ProviderKind, State};
 
 /// Adjacently tagged so a consumer can branch on `status` rather than on
@@ -24,6 +24,9 @@ pub struct ProviderRow {
     /// Components, so the estimator can revisit the choice of measure.
     pub phys_footprint_bytes: Option<u64>,
     pub rss_bytes: Option<u64>,
+    /// Per-process breakdown, for attribution. Empty when unreadable.
+    #[serde(default)]
+    pub processes: Vec<ProcessSample>,
 }
 
 impl ProviderRow {
@@ -106,6 +109,10 @@ impl Ledger {
                             footprint_bytes: tree.as_ref().and_then(|t| t.footprint_bytes),
                             phys_footprint_bytes: tree.as_ref().and_then(|t| t.phys_footprint_bytes),
                             rss_bytes: tree.as_ref().and_then(|t| t.rss_bytes),
+                            processes: tree
+                                .as_ref()
+                                .map(|t| t.processes.clone())
+                                .unwrap_or_default(),
                         }
                     })
                 })
