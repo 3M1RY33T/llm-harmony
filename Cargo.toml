@@ -17,6 +17,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "1.1"
 clap = { version = "4.6", features = ["derive"] }
+libc = "0.2"
 libproc = "0.14"
 sysinfo = "0.39"
 walkdir = "2"

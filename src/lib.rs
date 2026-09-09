@@ -3,6 +3,7 @@ pub mod http;
 pub mod adapters;
 pub mod config;
 pub mod inventory;
+pub mod launch;
 pub mod ledger;
 pub mod memory;
 pub mod provider;

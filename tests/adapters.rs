@@ -158,62 +158,46 @@ fn ollama_probe_rejects_a_server_that_is_not_ollama() {
 
 use llm_harmony::adapters::llamacpp::LlamaCpp;
 
+/// Every llamacpp fixture below was captured from a live router on
+/// 2026-09-09. The previous set was constructed from documentation and was
+/// wrong in three ways -- a `meta` block that does not exist, an `n_ctx` that
+/// is never published, and a `/running` endpoint that 404s.
 #[test]
-fn llamacpp_marks_only_running_models_as_loaded() {
-    let models = fixture("llamacpp/v1-models.json");
-    let running = fixture("llamacpp/running.json");
-    let s = support::StubServer::start(support::routes(&[
-        ("/v1/models", &models),
-        ("/running", &running),
-    ]));
+fn llamacpp_reads_state_from_the_status_object() {
+    let models = fixture("llamacpp/v1-models-one-loaded.json");
+    let s = support::StubServer::start(support::routes(&[("/v1/models", &models)]));
     let out = LlamaCpp.list(&http(), &s.base_url()).unwrap();
 
     assert_eq!(out.len(), 2);
     let loaded: Vec<_> = out.iter().filter(|m| m.state == State::Loaded).collect();
-    assert_eq!(loaded.len(), 1);
-    assert_eq!(loaded[0].id, "Qwen3-14B-Q4_K_M");
-}
-
-/// `n_ctx` is the window being served; `n_ctx_train` is a capability figure.
-#[test]
-fn llamacpp_never_reads_n_ctx_train_as_a_serving_window() {
-    let models = fixture("llamacpp/v1-models.json");
-    let running = fixture("llamacpp/running.json");
-    let s = support::StubServer::start(support::routes(&[
-        ("/v1/models", &models),
-        ("/running", &running),
-    ]));
-    let out = LlamaCpp.list(&http(), &s.base_url()).unwrap();
-
-    let loaded = out.iter().find(|m| m.state == State::Loaded).unwrap();
-    assert_eq!(loaded.context_tokens, Some(8192), "n_ctx, not n_ctx_train (40960)");
-
-    let idle = out.iter().find(|m| m.id == "Qwen3-1.7B-Q8_0").unwrap();
-    assert_eq!(idle.context_tokens, None, "n_ctx is null when not resident");
+    assert_eq!(loaded.len(), 1, "status.value == loaded is the only signal");
 }
 
 #[test]
-fn llamacpp_reads_artifact_size_from_meta() {
-    let models = fixture("llamacpp/v1-models.json");
-    let running = fixture("llamacpp/running.json");
-    let s = support::StubServer::start(support::routes(&[
-        ("/v1/models", &models),
-        ("/running", &running),
-    ]));
-    let out = LlamaCpp.list(&http(), &s.base_url()).unwrap();
-    let loaded = out.iter().find(|m| m.state == State::Loaded).unwrap();
-    assert_eq!(loaded.weights_bytes, Some(8_988_392_448));
-}
-
-/// A plain llama-server has no router, so /running 404s. Models are then
-/// reported with an unknown state rather than the whole provider failing.
-#[test]
-fn llamacpp_survives_a_missing_router_endpoint() {
+fn llamacpp_lists_everything_the_router_scanned_as_not_loaded() {
     let models = fixture("llamacpp/v1-models.json");
     let s = support::StubServer::start(support::routes(&[("/v1/models", &models)]));
     let out = LlamaCpp.list(&http(), &s.base_url()).unwrap();
-    assert_eq!(out.len(), 2, "models still listed without /running");
+    assert_eq!(out.len(), 2);
     assert!(out.iter().all(|m| m.state == State::NotLoaded));
+}
+
+/// This build publishes no window at all. `None` beats a number nothing
+/// measured -- the same rule vLLM-MLX gets.
+#[test]
+fn llamacpp_publishes_no_serving_window_so_reports_none() {
+    let models = fixture("llamacpp/v1-models-one-loaded.json");
+    let s = support::StubServer::start(support::routes(&[("/v1/models", &models)]));
+    let out = LlamaCpp.list(&http(), &s.base_url()).unwrap();
+    assert!(out.iter().all(|m| m.context_tokens.is_none()));
+}
+
+/// It no longer calls /running at all: that endpoint 404s on this build.
+#[test]
+fn llamacpp_needs_only_the_models_endpoint() {
+    let models = fixture("llamacpp/v1-models.json");
+    let s = support::StubServer::start(support::routes(&[("/v1/models", &models)]));
+    assert!(LlamaCpp.list(&http(), &s.base_url()).is_ok(), "no /running route served");
 }
 
 #[test]

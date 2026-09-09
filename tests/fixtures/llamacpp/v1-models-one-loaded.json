@@ -8,7 +8,7 @@
       "owned_by": "llamacpp",
       "created": 1788970270,
       "status": {
-        "value": "unloaded",
+        "value": "loaded",
         "args": [
           "/opt/homebrew/Cellar/llama.cpp/10240/bin/llama-server",
           "--host",

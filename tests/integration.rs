@@ -12,6 +12,12 @@ fn fixture(name: &str) -> String {
     std::fs::read_to_string(format!("tests/fixtures/{name}")).expect("fixture exists")
 }
 
+/// A provider entry with no launch configuration -- the shape every test here
+/// wants, since none of them start anything.
+fn provider(kind: ProviderKind, url: String) -> ProviderConfig {
+    ProviderConfig { kind, url, start: None, launchd_label: None }
+}
+
 fn tree(pids: Vec<u32>, bytes: Option<u64>) -> ProcessTree {
     ProcessTree {
         pids,
@@ -34,10 +40,7 @@ fn machine() -> Machine {
 #[test]
 fn a_provider_that_is_down_is_a_row_not_an_error() {
     let cfg = Config {
-        providers: vec![ProviderConfig {
-            kind: ProviderKind::LlamaCpp,
-            url: "http://127.0.0.1:1".to_string(),
-        }],
+        providers: vec![provider(ProviderKind::LlamaCpp, "http://127.0.0.1:1".to_string())],
     };
     let ledger =
         Ledger::assemble_with(&cfg, &Http::new(Duration::from_millis(500)), machine(), |_| None);
@@ -66,8 +69,8 @@ fn two_live_providers_are_both_assembled() {
 
     let cfg = Config {
         providers: vec![
-            ProviderConfig { kind: ProviderKind::LmStudio, url: lms.base_url() },
-            ProviderConfig { kind: ProviderKind::Ollama, url: oll.base_url() },
+            provider(ProviderKind::LmStudio, lms.base_url()),
+            provider(ProviderKind::Ollama, oll.base_url()),
         ],
     };
     let ledger = Ledger::assemble_with(
@@ -101,7 +104,7 @@ fn provider_footprints_sum_into_a_total() {
     ]));
 
     let cfg = Config {
-        providers: vec![ProviderConfig { kind: ProviderKind::Ollama, url: oll.base_url() }],
+        providers: vec![provider(ProviderKind::Ollama, oll.base_url())],
     };
     let ledger = Ledger::assemble_with(
         &cfg,
@@ -124,7 +127,7 @@ fn an_unreadable_footprint_does_not_hide_the_models() {
     ]));
 
     let cfg = Config {
-        providers: vec![ProviderConfig { kind: ProviderKind::Ollama, url: oll.base_url() }],
+        providers: vec![provider(ProviderKind::Ollama, oll.base_url())],
     };
     let ledger = Ledger::assemble_with(
         &cfg,

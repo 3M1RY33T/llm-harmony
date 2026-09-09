@@ -8,6 +8,24 @@ use crate::provider::ProviderKind;
 pub struct ProviderConfig {
     pub kind: ProviderKind,
     pub url: String,
+    /// The command that brings this provider up. Harmony runs it verbatim and
+    /// never composes one: every flag that matters lives in the user's own
+    /// script -- `--models-dir --models-max 1 --jinja` for llama.cpp,
+    /// `--continuous-batching` for vLLM-MLX -- and reproducing them here would
+    /// be a second, worse source of truth.
+    pub start: Option<String>,
+    /// Adopt an existing launchd agent instead of installing one. Both
+    /// `com.ollama.ollama` and LM Studio's own agent are already registered on
+    /// this machine.
+    pub launchd_label: Option<String>,
+}
+
+impl ProviderConfig {
+    pub fn label(&self) -> String {
+        self.launchd_label
+            .clone()
+            .unwrap_or_else(|| format!("dev.llm-harmony.{}", self.kind.as_str()))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -27,6 +45,10 @@ struct RawConfig {
 struct RawProvider {
     kind: String,
     url: String,
+    #[serde(default)]
+    start: Option<String>,
+    #[serde(default)]
+    launchd_label: Option<String>,
 }
 
 impl Config {
@@ -38,6 +60,8 @@ impl Config {
                 .map(|kind| ProviderConfig {
                     kind,
                     url: format!("http://127.0.0.1:{}", kind.default_port()),
+                    start: None,
+                    launchd_label: None,
                 })
                 .collect(),
         }
@@ -56,6 +80,8 @@ impl Config {
                 Ok(ProviderConfig {
                     kind,
                     url: p.url.trim_end_matches('/').to_string(),
+                    start: p.start,
+                    launchd_label: p.launchd_label,
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
@@ -127,6 +153,60 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.contains("vllm-mlx"), "error should name the bad kind, got: {err}");
+    }
+
+    #[test]
+    fn a_provider_may_declare_how_to_start_it() {
+        let c = Config::from_toml(
+            r#"
+            [[provider]]
+            kind = "llamacpp"
+            url = "http://127.0.0.1:8080"
+            start = "~/.llamacpp/serve-pool --port 8080"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(
+            c.providers[0].start.as_deref(),
+            Some("~/.llamacpp/serve-pool --port 8080")
+        );
+    }
+
+    /// Starting is opt-in. A provider that declares nothing can be observed
+    /// and never launched, which is the `observe` default of design.md §6.
+    #[test]
+    fn a_provider_without_a_start_command_cannot_be_started() {
+        let c = Config::defaults();
+        assert!(c.providers.iter().all(|p| p.start.is_none()));
+    }
+
+    /// The label is derived, not invented, so `install` and `stop` agree.
+    #[test]
+    fn the_launchd_label_defaults_to_a_stable_derivation() {
+        let c = Config::from_toml(
+            r#"
+            [[provider]]
+            kind = "llamacpp"
+            url = "http://127.0.0.1:8080"
+            start = "x"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(c.providers[0].label(), "dev.llm-harmony.llamacpp");
+    }
+
+    #[test]
+    fn an_explicit_label_wins_so_an_existing_agent_can_be_adopted() {
+        let c = Config::from_toml(
+            r#"
+            [[provider]]
+            kind = "ollama"
+            url = "http://127.0.0.1:11434"
+            launchd_label = "com.ollama.ollama"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(c.providers[0].label(), "com.ollama.ollama");
     }
 
     #[test]

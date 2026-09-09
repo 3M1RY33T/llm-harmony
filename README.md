@@ -26,12 +26,16 @@ claim of the project.
 > leaking its raw token stream. Same word, different thing: that Harmony is a
 > wire format a model emits; this one decides what fits.
 
-**Status: slice 1 implemented.** `llm-harmony status` reads all four providers
-and reports what they collectively cost. Everything else is design.
+**Status: slices 1–4 implemented**, 125 tests. `status` reads all four
+providers, `ls` and `rm --dry-run` cover 146 GB across five stores, `estimate`
+predicts a model's footprint from measurement, and `start` brings a provider up
+under launchd. `RESOLVE` — asking for a *model* rather than a provider — is
+next.
 
 | Document | What it covers |
 |---|---|
 | [`docs/architecture.md`](docs/architecture.md) | the two planes, the two ledgers, and how the pieces fit |
+| [`docs/roadmap.md`](docs/roadmap.md) | the arc from here to the goal, slice by slice |
 | [`docs/design.md`](docs/design.md) | memory admission at runtime — the ledger, the protocol, eviction |
 | [`docs/inventory.md`](docs/inventory.md) | safe add/remove of models, the dependency graph, the HF pipeline |
 | [`docs/field-notes.md`](docs/field-notes.md) | provider behaviour verified by hand, with the traps that cost time |
@@ -95,8 +99,9 @@ asserted here.
 - **Out of the request path.** Inference latency is untouched, and a daemon
   crash degrades serving to today's behaviour rather than taking every provider
   with it.
-- **No server lifecycle ownership.** You keep starting servers however you
-  like, with whatever flags. The daemon discovers them.
+- **Your launch commands, not ours.** Harmony can start a provider, but only
+  by running a command you declared — every flag stays in your own script. A
+  provider you start by hand is discovered exactly as before.
 - **Refuses rather than warns.** On both ledgers, the failure modes are
   expensive and asymmetric: over-estimating memory wastes capacity, and
   under-estimating it takes the machine down. Bias accordingly.
@@ -109,7 +114,7 @@ invented:
 | Provider | Observe | Evict |
 |---|---|---|
 | LM Studio | `GET /api/v0/models` → `state`, `loaded_context_length`; `lms ps` | `lms unload <model>` |
-| llama.cpp | `GET /v1/models` → `meta.n_ctx`; router `GET /running` | `POST /api/models/unload/<model>` |
+| llama.cpp | `GET /v1/models` → `status.value` (**not** `meta.n_ctx`, and `/running` 404s — corrected 2026-09-09 against a live router) | `POST /api/models/unload/<model>` |
 | vLLM-MLX | `GET /v1/models`; registry budget | registry eviction; process signal |
 | Ollama | `ollama ps`, `GET /api/ps` | `ollama stop <model>`, `keep_alive: 0` |
 
@@ -124,44 +129,48 @@ path exists in the crate.
 ```
 $ llm-harmony status
 provider    loaded   footprint   weights      gap
-lmstudio         1        7.0G         ?        ?
-ollama           0       15.8M         ?        ?
-llamacpp         — not running
+lmstudio         1        8.9G         ?        ?
+ollama           0       17.4M         ?        ?
+llamacpp         0       36.1M         ?        ?
 vllm             — not running
 ──────────────────────────────────────────────────
-providers                 7.0G
-machine    24.0G total · 9% free · swap 6.0G used
-```
+providers                 9.0G
+machine    24.0G total · 12% free · swap 7.2G used```
 
-`footprint` is real `phys_footprint`, which on Apple Silicon includes Metal
-buffers in unified memory. `weights` is shown only where a provider publishes an
-artifact size — of the four, only Ollama does — and `gap` is the KV cache and
-activations that every per-provider budget omits.
+`footprint` is per-process `max(phys_footprint, rss)`. Neither metric alone is
+enough: `phys_footprint` cannot see a memory-mapped GGUF, and RSS cannot see
+Metal buffers in unified memory. `weights` appears only where a provider
+publishes an artifact size — of the four, only Ollama does — and `gap` is the KV
+cache and activations every per-provider budget omits.
 
 That output is the failure this project exists to prevent, caught live: one 14B
-model on a 24 GB machine, three of four providers idle, and swap already at
-6 GB.
+model on a 24 GB machine and swap already in the gigabytes.
 
 ## Open questions
 
 Settled in the docs, not here:
 
-1. **If the right provider is not running, does harmony start it?** Refusing is
-   not seamless; starting it crosses the server-lifecycle line. The sharpest
-   unresolved question in the design.
-2. **How is a footprint estimated** on unified memory, where weights are the
-   floor and the KV cache is the part that actually kills you?
-3. **Is `DERIVES_FROM` recorded or inferred?** Inference was acceptable for an
-   offline `rm`; it is riskier once placement depends on it.
-4. **What is the memory reserve on 24 GB?** 8 GB is a guess that should be
-   measured before anyone trusts it.
+1. ~~**If the right provider is not running, does harmony start it?**~~
+   **Answered 2026-09-09: yes, opt-in, supervised by launchd.**
+2. ~~**How is a footprint estimated?**~~ **Answered by slice 3:** measured from
+   the largest process in a provider's tree, and *unknown* rather than guessed
+   for a shape never seen.
+3. **Is `DERIVES_FROM` recorded or inferred?** Still open, and now load-bearing:
+   placement would depend on it, and slice 2 forbids inferred lineage from
+   driving decisions.
+4. **What is the memory reserve on 24 GB?** 8 GB remains a guess. A dozen
+   observations is not a basis for tuning it.
 
 ## Non-goals
 
 - **Not a router, gateway, or load balancer.** It returns coordinates; it never
   carries a request.
-- **Does not start or supervise inference servers**, and does not transform
-  requests. (It *does* choose which provider serves a model — that is
-  placement, and it is a goal.)
+- **Starts and supervises inference servers only on request, per provider,
+  opt-in.** Changed 2026-09-09; it was previously a non-goal. Harmony runs a
+  `start` command *you* declare and installs it as a launchd agent, so macOS
+  supervises it and a dead harmony never stops a running server. It still never
+  learns a provider's flags — those stay in your scripts.
+- **Does not transform requests.** (It *does* choose which provider serves a
+  model — that is placement, and it is a goal.)
 - **Not a scheduler for throughput.** It optimises *fitting*, not tokens/sec.
 - **Not cross-machine.** One host, one daemon.

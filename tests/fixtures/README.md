@@ -10,10 +10,16 @@ that drifts from the real server is worse than no fixture.
 | `ollama/ps-empty.json` | **Captured live** 2026-09-09, `GET /api/ps` with nothing resident |
 | `ollama/tags.json` | **Captured live** 2026-09-09, `GET /api/tags` |
 | `ollama/ps-one-loaded.json` | Derived from `tags.json` plus the `/api/ps` fields documented upstream |
-| `llamacpp/v1-models.json` | **UNVERIFIED** — constructed from `docs/field-notes.md`; llama.cpp was not running |
-| `llamacpp/running.json` | **UNVERIFIED** — same |
+| `llamacpp/v1-models.json` | **Captured live** 2026-09-09 from the router on `:8080` |
+| `llamacpp/v1-models-one-loaded.json` | Derived from the above; `status.value` flipped to `loaded` |
 | `vllm/v1-models.json` | **UNVERIFIED** — constructed from `docs/field-notes.md`; vLLM-MLX was not running |
 
-Re-capture the three UNVERIFIED fixtures the next time those servers run, then
+Re-capture the remaining UNVERIFIED fixture the next time vLLM-MLX runs, then
 update this table. If a re-capture disagrees with a fixture, the adapter is
 wrong, not the server.
+
+**That is exactly what happened to llama.cpp on 2026-09-09.** The constructed
+fixture claimed a `meta.n_ctx` block and a `/running` endpoint. The real router
+has neither: state lives in `status.value`, `/running` returns 404, and no
+context window is published at all. The adapter was rewritten to match the
+server.

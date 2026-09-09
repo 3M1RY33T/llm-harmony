@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 use crate::http::Http;
 use crate::provider::{Adapter, LoadedModel, ProbeError, ProviderKind, State};
 
@@ -8,11 +6,17 @@ pub struct LlamaCpp;
 impl LlamaCpp {
     fn fetch_models(&self, http: &Http, base: &str) -> Result<serde_json::Value, ProbeError> {
         let v = http.get_json(&format!("{base}/v1/models"))?;
-        // Three providers answer /v1/models, so shape alone is not enough:
-        // require the `meta` block llama.cpp attaches and nobody else does.
+        // Three providers answer /v1/models, so shape alone is not enough.
+        // llama.cpp's router attaches a `status` object to every entry and
+        // nobody else does.
+        //
+        // Captured live 2026-09-09. An earlier version of this adapter looked
+        // for a `meta` block, from a fixture constructed out of docs rather
+        // than captured from a server. No such block exists, and the mistake
+        // only surfaced the first time llama.cpp was actually started.
         let is_llamacpp = v["data"]
             .as_array()
-            .map(|a| a.iter().any(|m| m.get("meta").is_some()))
+            .map(|a| a.iter().any(|m| m.get("status").is_some()))
             .unwrap_or(false);
         if !is_llamacpp {
             return Err(ProbeError::KindMismatch {
@@ -20,21 +24,6 @@ impl LlamaCpp {
             });
         }
         Ok(v)
-    }
-
-    /// The router's resident set. Absent on a plain `llama-server`.
-    fn running(&self, http: &Http, base: &str) -> HashSet<String> {
-        let Ok(v) = http.get_json(&format!("{base}/running")) else {
-            return HashSet::new();
-        };
-        v["running"]
-            .as_array()
-            .map(|a| {
-                a.iter()
-                    .filter_map(|m| m["model"].as_str().map(str::to_string))
-                    .collect()
-            })
-            .unwrap_or_default()
     }
 }
 
@@ -49,7 +38,6 @@ impl Adapter for LlamaCpp {
 
     fn list(&self, http: &Http, base: &str) -> Result<Vec<LoadedModel>, ProbeError> {
         let v = self.fetch_models(http, base)?;
-        let running = self.running(http, base);
 
         Ok(v["data"]
             .as_array()
@@ -57,23 +45,23 @@ impl Adapter for LlamaCpp {
             .iter()
             .filter_map(|m| {
                 let id = m["id"].as_str()?.to_string();
-                let state = if running.contains(&id) {
-                    State::Loaded
-                } else {
-                    State::NotLoaded
-                };
-                // meta.n_ctx is the served window and is null when not
-                // resident. meta.n_ctx_train is what the model was trained
-                // with and never bounds a request.
-                let context_tokens = match state {
-                    State::Loaded => m["meta"]["n_ctx"].as_u64().map(|n| n as u32),
-                    _ => None,
+                let state = match m["status"]["value"].as_str() {
+                    Some("loaded") => State::Loaded,
+                    Some("loading") | Some("starting") => State::Loading,
+                    _ => State::NotLoaded,
                 };
                 Some(LoadedModel {
                     id,
                     state,
-                    context_tokens,
-                    weights_bytes: m["meta"]["size"].as_u64(),
+                    // This build publishes no context window anywhere -- not
+                    // on the model entry, not under `architecture`. Verified
+                    // live 2026-09-09 against llama.cpp b10240. `None` is the
+                    // honest answer; the previous `meta.n_ctx` was invented.
+                    context_tokens: None,
+                    // Nor a size. The artifact path is in `status.args` as
+                    // `--model <path>`, which the disk ledger could stat --
+                    // but that is slice 2's job, not this adapter's.
+                    weights_bytes: None,
                 })
             })
             .collect())

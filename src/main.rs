@@ -42,6 +42,21 @@ enum Command {
         #[arg(long)]
         live: bool,
     },
+    /// Write a launchd agent for a provider. Writes to ~/Library/LaunchAgents.
+    Install {
+        provider: String,
+        /// Print the agent instead of writing it.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Start a provider and wait until it answers.
+    Start {
+        provider: String,
+        #[arg(long, default_value_t = 60)]
+        timeout_s: u64,
+    },
+    /// Stop a provider harmony installed.
+    Stop { provider: String },
     /// What a model costs, and whether it fits right now.
     Estimate {
         model: String,
@@ -71,6 +86,19 @@ fn inventory(live: bool) -> llm_harmony::inventory::Inventory {
     let machine = Machine::read().expect("machine memory readable");
     let http = Http::new(Duration::from_millis(1500));
     llm_harmony::inventory::Inventory::scan(&config, &http, machine)
+}
+
+/// The configured entry for a provider named on the command line.
+fn provider_config(
+    name: &str,
+) -> Result<llm_harmony::config::ProviderConfig, String> {
+    let kind: llm_harmony::provider::ProviderKind = name.parse()?;
+    let config = Config::load(None)?;
+    config
+        .providers
+        .into_iter()
+        .find(|p| p.kind == kind)
+        .ok_or_else(|| format!("`{name}` is not in your config"))
 }
 
 fn main() -> ExitCode {
@@ -138,6 +166,119 @@ fn main() -> ExitCode {
                 print!("{}", llm_harmony::render_ls::render_ls(&inv));
             }
             ExitCode::SUCCESS
+        }
+        Command::Install { provider, dry_run } => {
+            let p = match provider_config(&provider) {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("llm-harmony: {e}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            // The environment the user would have run it in. A launchd agent
+            // inherits nothing, so capture it here rather than hoping.
+            let path_env = std::env::var("PATH").unwrap_or_default();
+            let xml = match llm_harmony::launch::plist::for_provider(&p, &path_env) {
+                Ok(x) => x,
+                Err(e) => {
+                    eprintln!("llm-harmony: {e}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            let Some(dest) = llm_harmony::launch::plist::path(&p.label()) else {
+                eprintln!("llm-harmony: cannot locate ~/Library/LaunchAgents");
+                return ExitCode::FAILURE;
+            };
+            if dry_run {
+                println!("{xml}");
+                eprintln!("would write {}", dest.display());
+                return ExitCode::SUCCESS;
+            }
+            // The one write outside harmony's own state directory. Never
+            // silent: the destination is printed before the write happens.
+            eprintln!("writing {}", dest.display());
+            if let Some(parent) = dest.parent() {
+                if let Err(e) = std::fs::create_dir_all(parent) {
+                    eprintln!("llm-harmony: {e}");
+                    return ExitCode::FAILURE;
+                }
+            }
+            if let Err(e) = std::fs::write(&dest, xml) {
+                eprintln!("llm-harmony: {e}");
+                return ExitCode::FAILURE;
+            }
+            match llm_harmony::launch::launchctl::bootstrap(&dest) {
+                Ok(()) => {
+                    println!("installed {}", p.label());
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("llm-harmony: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        Command::Start { provider, timeout_s } => {
+            let p = match provider_config(&provider) {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("llm-harmony: {e}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            let label = p.label();
+            if let Err(e) = llm_harmony::launch::launchctl::kickstart(&label) {
+                eprintln!("llm-harmony: {e}");
+                eprintln!("  has it been installed? try `llm-harmony install {provider}`");
+                return ExitCode::FAILURE;
+            }
+            let http = Http::new(Duration::from_millis(1500));
+            let adapter = llm_harmony::adapters::adapter_for(p.kind);
+            match llm_harmony::launch::ready::wait_for(
+                adapter.as_ref(),
+                &http,
+                &p.url,
+                Duration::from_secs(timeout_s),
+            ) {
+                Ok(took) => {
+                    println!("{} answered after {:.1}s", p.kind, took.as_secs_f64());
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    // Launched is not serving. The reason is in the logs the
+                    // agent writes, so name them rather than guessing.
+                    eprintln!("llm-harmony: {e}");
+                    if let Some(code) = llm_harmony::launch::launchctl::last_exit_code(&label) {
+                        eprintln!("  the start command exited {code}{}", match code {
+                            127 => " (command not found -- was it installed with the right PATH?)",
+                            126 => " (not executable)",
+                            _ => "",
+                        });
+                    }
+                    eprintln!("  logs: ~/.local/state/llm-harmony/{label}.err.log");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        Command::Stop { provider } => {
+            let p = match provider_config(&provider) {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("llm-harmony: {e}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            match llm_harmony::launch::launchctl::bootout(&p.label()) {
+                Ok(()) => {
+                    println!("stopped {}", p.label());
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("llm-harmony: {e}");
+                    eprintln!("  a provider harmony did not install is not harmony's to stop");
+                    ExitCode::FAILURE
+                }
+            }
         }
         Command::Estimate { model, context, reserve, json } => {
             let machine = match Machine::read() {
