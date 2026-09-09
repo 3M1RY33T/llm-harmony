@@ -4,8 +4,10 @@ use crate::http::Http;
 use crate::memory::{footprint_for_port, port_from_url, Machine};
 use crate::provider::{LoadedModel, ProbeError, ProviderKind, State};
 
+/// Adjacently tagged so a consumer can branch on `status` rather than on
+/// whether `outcome` happens to be an array or an object.
 #[derive(Debug, Clone, serde::Serialize)]
-#[serde(untagged)]
+#[serde(tag = "status", content = "detail", rename_all = "kebab-case")]
 pub enum Outcome {
     Ok(Vec<LoadedModel>),
     Failed(ProbeError),
@@ -47,8 +49,18 @@ impl ProviderRow {
     }
 }
 
+/// Bumped whenever the serialised shape changes in a way a consumer would
+/// notice. Consumers should refuse a schema they do not know.
+pub const SCHEMA: u32 = 1;
+
+fn schema() -> u32 {
+    SCHEMA
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Ledger {
+    #[serde(default = "schema", rename = "schema")]
+    pub schema_version: u32,
     pub machine: Machine,
     pub rows: Vec<ProviderRow>,
 }
@@ -103,7 +115,11 @@ impl Ledger {
                 .collect::<Vec<_>>()
         });
 
-        Ledger { machine, rows }
+        Ledger {
+            schema_version: SCHEMA,
+            machine,
+            rows,
+        }
     }
 
     /// `None` only when no provider reported a readable footprint.

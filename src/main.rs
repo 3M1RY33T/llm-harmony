@@ -91,7 +91,13 @@ fn main() -> ExitCode {
         Command::Ls { json, live } => {
             let inv = inventory(live);
             if json {
-                println!("{}", serde_json::to_string_pretty(&inv.identities).unwrap());
+                let doc = serde_json::json!({
+                    "schema": llm_harmony::ledger::SCHEMA,
+                    "total_bytes": inv.total_bytes(),
+                    "artifact_count": inv.artifacts.len(),
+                    "models": inv.identities,
+                });
+                println!("{}", serde_json::to_string_pretty(&doc).unwrap());
             } else {
                 print!("{}", llm_harmony::render_ls::render_ls(&inv));
             }

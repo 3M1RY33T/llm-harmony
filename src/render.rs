@@ -103,6 +103,7 @@ mod tests {
 
     fn ledger() -> Ledger {
         Ledger {
+            schema_version: crate::ledger::SCHEMA,
             machine: machine(),
             rows: vec![
                 ProviderRow {
@@ -175,7 +176,10 @@ mod tests {
         let json = render_json(&ledger());
         let v: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
         assert_eq!(v["rows"].as_array().unwrap().len(), 3);
-        assert_eq!(v["rows"][2]["outcome"]["error"], "not-listening");
+        assert_eq!(v["schema"], 1, "consumers must be able to detect a shape change");
+        assert_eq!(v["rows"][2]["outcome"]["status"], "failed");
+        assert_eq!(v["rows"][2]["outcome"]["detail"]["error"], "not-listening");
+        assert_eq!(v["rows"][0]["outcome"]["status"], "ok");
         assert_eq!(v["machine"]["total_bytes"], 25_769_803_776u64);
     }
 }
