@@ -1,0 +1,24 @@
+{
+  "data": [
+    {
+      "id": "locateanything-3b-mlx",
+      "object": "model",
+      "state": "not-loaded",
+      "max_context_length": 32768
+    },
+    {
+      "id": "qwen3-14b-claude-4.5-opus-high-reasoning-distill",
+      "object": "model",
+      "state": "loaded",
+      "max_context_length": 40960,
+      "loaded_context_length": 8192
+    },
+    {
+      "id": "text-embedding-nomic-embed-text-v1.5",
+      "object": "model",
+      "state": "not-loaded",
+      "max_context_length": 2048
+    }
+  ],
+  "object": "list"
+}
