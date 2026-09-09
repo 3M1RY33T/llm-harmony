@@ -5,11 +5,20 @@ use std::time::Duration;
 use llm_harmony::config::{Config, ProviderConfig};
 use llm_harmony::http::Http;
 use llm_harmony::ledger::{Ledger, Outcome};
-use llm_harmony::memory::Machine;
+use llm_harmony::memory::{Machine, ProcessTree};
 use llm_harmony::provider::{ProbeError, ProviderKind, State};
 
 fn fixture(name: &str) -> String {
     std::fs::read_to_string(format!("tests/fixtures/{name}")).expect("fixture exists")
+}
+
+fn tree(pids: Vec<u32>, bytes: Option<u64>) -> ProcessTree {
+    ProcessTree {
+        pids,
+        footprint_bytes: bytes,
+        phys_footprint_bytes: bytes,
+        rss_bytes: bytes,
+    }
 }
 
 fn machine() -> Machine {
@@ -64,7 +73,7 @@ fn two_live_providers_are_both_assembled() {
         &cfg,
         &Http::new(Duration::from_millis(1500)),
         machine(),
-        |_port| Some((vec![647], Some(9_800_000_000))),
+        |_port| Some(tree(vec![647], Some(9_800_000_000))),
     );
 
     assert_eq!(ledger.rows.len(), 2);
@@ -97,7 +106,7 @@ fn provider_footprints_sum_into_a_total() {
         &cfg,
         &Http::new(Duration::from_millis(1500)),
         machine(),
-        |_port| Some((vec![4140], Some(400_000_000))),
+        |_port| Some(tree(vec![4140], Some(400_000_000))),
     );
 
     assert_eq!(ledger.total_footprint_bytes(), Some(400_000_000));
@@ -120,7 +129,7 @@ fn an_unreadable_footprint_does_not_hide_the_models() {
         &cfg,
         &Http::new(Duration::from_millis(1500)),
         machine(),
-        |_port| Some((vec![4140], None)),
+        |_port| Some(tree(vec![4140], None)),
     );
 
     assert_eq!(ledger.rows[0].footprint_bytes, None);

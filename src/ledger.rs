@@ -1,7 +1,7 @@
 use crate::adapters::adapter_for;
 use crate::config::Config;
 use crate::http::Http;
-use crate::memory::{footprint_for_port, port_from_url, Machine};
+use crate::memory::{footprint_for_port, port_from_url, Machine, ProcessTree};
 use crate::provider::{LoadedModel, ProbeError, ProviderKind, State};
 
 /// Adjacently tagged so a consumer can branch on `status` rather than on
@@ -19,7 +19,11 @@ pub struct ProviderRow {
     pub url: String,
     pub outcome: Outcome,
     pub pids: Vec<u32>,
+    /// `max(phys_footprint, rss)` per process, summed. See memory::combined.
     pub footprint_bytes: Option<u64>,
+    /// Components, so the estimator can revisit the choice of measure.
+    pub phys_footprint_bytes: Option<u64>,
+    pub rss_bytes: Option<u64>,
 }
 
 impl ProviderRow {
@@ -69,15 +73,13 @@ impl Ledger {
     /// Poll every configured provider. Concurrent because four sequential
     /// timeouts against dead ports would otherwise dominate the runtime.
     pub fn assemble(config: &Config, http: &Http, machine: Machine) -> Ledger {
-        Self::assemble_with(config, http, machine, |port| {
-            footprint_for_port(port).map(|t| (t.pids, t.footprint_bytes))
-        })
+        Self::assemble_with(config, http, machine, footprint_for_port)
     }
 
     /// `footprint` is injected so tests never touch real processes.
     pub fn assemble_with<F>(config: &Config, http: &Http, machine: Machine, footprint: F) -> Ledger
     where
-        F: Fn(u16) -> Option<(Vec<u32>, Option<u64>)> + Sync,
+        F: Fn(u16) -> Option<ProcessTree> + Sync,
     {
         let footprint = &footprint;
         let rows = std::thread::scope(|scope| {
@@ -92,18 +94,18 @@ impl Ledger {
                             Err(e) => Outcome::Failed(e),
                         };
                         // Only attribute memory to a provider that answered.
-                        let (pids, footprint_bytes) = match (&outcome, port_from_url(&p.url)) {
-                            (Outcome::Ok(_), Some(port)) => {
-                                footprint(port).unwrap_or((Vec::new(), None))
-                            }
-                            _ => (Vec::new(), None),
+                        let tree = match (&outcome, port_from_url(&p.url)) {
+                            (Outcome::Ok(_), Some(port)) => footprint(port),
+                            _ => None,
                         };
                         ProviderRow {
                             kind: p.kind,
                             url: p.url.clone(),
                             outcome,
-                            pids,
-                            footprint_bytes,
+                            pids: tree.as_ref().map(|t| t.pids.clone()).unwrap_or_default(),
+                            footprint_bytes: tree.as_ref().and_then(|t| t.footprint_bytes),
+                            phys_footprint_bytes: tree.as_ref().and_then(|t| t.phys_footprint_bytes),
+                            rss_bytes: tree.as_ref().and_then(|t| t.rss_bytes),
                         }
                     })
                 })

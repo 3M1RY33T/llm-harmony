@@ -43,9 +43,25 @@ impl Machine {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct ProcessTree {
     pub pids: Vec<u32>,
-    /// `None` when no pid's usage could be read -- e.g. a root-owned process.
-    /// Never silently zero.
+    /// The admission figure: per-process `max(phys_footprint, rss)`, summed.
+    /// `None` when no pid's usage could be read -- never silently zero.
     pub footprint_bytes: Option<u64>,
+    /// Component, kept so the estimator can revisit this choice later.
+    pub phys_footprint_bytes: Option<u64>,
+    /// Component. Sees mmapped weights that `phys_footprint` does not.
+    pub rss_bytes: Option<u64>,
+}
+
+/// The larger of the two metrics, because each is blind to something the
+/// other sees -- mmapped GGUF weights for `phys_footprint`, Metal buffers in
+/// unified memory for RSS. See the tests for the measured evidence.
+pub fn combined(phys: Option<u64>, rss: Option<u64>) -> Option<u64> {
+    match (phys, rss) {
+        (Some(a), Some(b)) => Some(a.max(b)),
+        (Some(a), None) => Some(a),
+        (None, Some(b)) => Some(b),
+        (None, None) => None,
+    }
 }
 
 pub fn port_from_url(url: &str) -> Option<u16> {
@@ -107,10 +123,11 @@ fn descendants(sys: &System, root: u32) -> Vec<u32> {
 /// `Process::memory()` is resident size and undercounts by roughly 3x on the
 /// GPU helper processes that actually hold model weights (verified 2026-09-09:
 /// LM Studio pid 647 reported 104 MB resident against 285 MB footprint).
-fn phys_footprint(pid: u32) -> Option<u64> {
+/// `(phys_footprint, resident_size)` for a pid, from one syscall.
+fn usage(pid: u32) -> Option<(u64, u64)> {
     pidrusage::<RUsageInfoV2>(pid as i32)
         .ok()
-        .map(|r| r.ri_phys_footprint)
+        .map(|r| (r.ri_phys_footprint, r.ri_resident_size))
 }
 
 /// The process tree serving `port`, and its summed footprint.
@@ -125,11 +142,16 @@ pub fn footprint_for_port(port: u16) -> Option<ProcessTree> {
     );
     let pids = descendants(&sys, root);
 
-    let mut total: u64 = 0;
+    let (mut total, mut phys_total, mut rss_total) = (0u64, 0u64, 0u64);
     let mut any = false;
     for pid in &pids {
-        if let Some(bytes) = phys_footprint(*pid) {
-            total += bytes;
+        if let Some((phys, rss)) = usage(*pid) {
+            // Per process, not per tree: a provider mixes an Electron shell
+            // whose cost is anonymous with a backend whose cost is mmapped,
+            // and taking the max of the two sums would lose one of them.
+            total += phys.max(rss);
+            phys_total += phys;
+            rss_total += rss;
             any = true;
         }
     }
@@ -137,5 +159,42 @@ pub fn footprint_for_port(port: u16) -> Option<ProcessTree> {
     Some(ProcessTree {
         pids,
         footprint_bytes: any.then_some(total),
+        phys_footprint_bytes: any.then_some(phys_total),
+        rss_bytes: any.then_some(rss_total),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Neither macOS metric sees the whole picture, and they are blind to
+    /// different things. Verified 2026-09-09 on this machine:
+    ///
+    /// - `phys_footprint` misses memory-mapped GGUF weights, because clean
+    ///   file-backed pages are not counted. `llama-server` held an 8.38 GB
+    ///   model and the whole LM Studio tree reported 6.89 GB.
+    /// - RSS misses Metal buffers in unified memory. LM Studio's main process
+    ///   reported 104 MB resident against a 285 MB footprint.
+    ///
+    /// Taking the larger is crude, but it is wrong in the direction
+    /// docs/design.md section 8 demands: over-estimating wastes capacity,
+    /// under-estimating wedges the machine.
+    #[test]
+    fn the_larger_of_the_two_metrics_wins() {
+        assert_eq!(combined(Some(6_890_000_000), Some(8_670_000_000)), Some(8_670_000_000));
+        assert_eq!(combined(Some(285_000_000), Some(104_000_000)), Some(285_000_000));
+    }
+
+    #[test]
+    fn a_readable_metric_is_used_even_when_the_other_is_not() {
+        assert_eq!(combined(Some(500), None), Some(500));
+        assert_eq!(combined(None, Some(700)), Some(700));
+    }
+
+    /// An unreadable process must not silently contribute zero.
+    #[test]
+    fn neither_metric_readable_is_unknown_not_zero() {
+        assert_eq!(combined(None, None), None);
+    }
 }

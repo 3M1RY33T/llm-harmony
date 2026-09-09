@@ -112,6 +112,8 @@ mod tests {
                     outcome: Outcome::Ok(vec![loaded("qwen3-14b", None)]),
                     pids: vec![647],
                     footprint_bytes: Some(9_800_000_000),
+                    phys_footprint_bytes: Some(9_800_000_000),
+                    rss_bytes: Some(9_800_000_000),
                 },
                 ProviderRow {
                     kind: ProviderKind::Ollama,
@@ -119,6 +121,8 @@ mod tests {
                     outcome: Outcome::Ok(vec![loaded("nomic-embed-text:latest", Some(274_302_450))]),
                     pids: vec![4140],
                     footprint_bytes: Some(400_000_000),
+                    phys_footprint_bytes: Some(400_000_000),
+                    rss_bytes: Some(400_000_000),
                 },
                 ProviderRow {
                     kind: ProviderKind::LlamaCpp,
@@ -126,6 +130,8 @@ mod tests {
                     outcome: Outcome::Failed(ProbeError::NotListening),
                     pids: vec![],
                     footprint_bytes: None,
+                    phys_footprint_bytes: None,
+                    rss_bytes: None,
                 },
             ],
         }

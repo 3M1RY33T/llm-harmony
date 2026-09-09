@@ -27,6 +27,12 @@ enum Command {
         config: Option<PathBuf>,
         #[arg(long, default_value_t = 1500)]
         timeout_ms: u64,
+        /// Append this reading to the observation log for the estimator.
+        #[arg(long)]
+        record: bool,
+        /// Where to append. Defaults to ~/.local/state/llm-harmony/observations.jsonl
+        #[arg(long, value_name = "PATH")]
+        record_path: Option<PathBuf>,
     },
     /// What is on disk, grouped by model.
     Ls {
@@ -60,7 +66,7 @@ fn inventory(live: bool) -> llm_harmony::inventory::Inventory {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
-        Command::Status { json, config, timeout_ms } => {
+        Command::Status { json, config, timeout_ms, record, record_path } => {
             // Only two things may fail the command: a broken config and an
             // unreadable machine total. No provider can.
             let config = match Config::load(config.as_deref()) {
@@ -80,6 +86,26 @@ fn main() -> ExitCode {
 
             let http = Http::new(Duration::from_millis(timeout_ms));
             let ledger = Ledger::assemble(&config, &http, machine);
+
+            if record {
+                // Recording must never fail the command: it is data
+                // collection, not the job.
+                let path = record_path.or_else(llm_harmony::record::default_path);
+                if let Some(path) = path {
+                    let obs = llm_harmony::record::observations(
+                        &ledger,
+                        llm_harmony::record::now_unix(),
+                    );
+                    let n = obs.len();
+                    match llm_harmony::record::append(&path, &obs) {
+                        Ok(()) if !json => {
+                            eprintln!("recorded {n} observation(s) to {}", path.display())
+                        }
+                        Ok(()) => {}
+                        Err(e) => eprintln!("llm-harmony: could not record: {e}"),
+                    }
+                }
+            }
 
             if json {
                 println!("{}", render_json(&ledger));
