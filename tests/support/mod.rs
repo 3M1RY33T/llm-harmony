@@ -88,3 +88,4 @@ pub fn routes(pairs: &[(&str, &str)]) -> HashMap<String, (u16, String)> {
         .map(|(p, b)| (p.to_string(), (200u16, b.to_string())))
         .collect()
 }
+pub mod tree;

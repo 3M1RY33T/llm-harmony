@@ -28,6 +28,33 @@ enum Command {
         #[arg(long, default_value_t = 1500)]
         timeout_ms: u64,
     },
+    /// What is on disk, grouped by model.
+    Ls {
+        #[arg(long)]
+        json: bool,
+        /// Also poll providers, so resident models become removal blockers.
+        #[arg(long)]
+        live: bool,
+    },
+    /// Print a removal plan. Never executes.
+    Rm {
+        model: String,
+        #[arg(long, default_value_t = true)]
+        dry_run: bool,
+        /// Poll providers so a served model produces a refusal.
+        #[arg(long)]
+        live: bool,
+    },
+}
+
+fn inventory(live: bool) -> llm_harmony::inventory::Inventory {
+    if !live {
+        return llm_harmony::inventory::Inventory::scan_offline(None);
+    }
+    let config = Config::load(None).unwrap_or_else(|_| Config::defaults());
+    let machine = Machine::read().expect("machine memory readable");
+    let http = Http::new(Duration::from_millis(1500));
+    llm_harmony::inventory::Inventory::scan(&config, &http, machine)
 }
 
 fn main() -> ExitCode {
@@ -59,6 +86,36 @@ fn main() -> ExitCode {
             } else {
                 print!("{}", render_table(&ledger));
             }
+            ExitCode::SUCCESS
+        }
+        Command::Ls { json, live } => {
+            let inv = inventory(live);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&inv.identities).unwrap());
+            } else {
+                print!("{}", llm_harmony::render_ls::render_ls(&inv));
+            }
+            ExitCode::SUCCESS
+        }
+        Command::Rm { model, dry_run, live } => {
+            if !dry_run {
+                eprintln!("llm-harmony: real removal is not implemented in this slice");
+                return ExitCode::FAILURE;
+            }
+            let inv = inventory(live);
+            let want = llm_harmony::inventory::identity::canonical_name(&model);
+            let arts: Vec<_> = inv
+                .artifacts
+                .iter()
+                .filter(|a| llm_harmony::inventory::identity::canonical_name(&a.name_hint) == want)
+                .cloned()
+                .collect();
+            if arts.is_empty() {
+                eprintln!("llm-harmony: no artifacts match `{model}`");
+                return ExitCode::FAILURE;
+            }
+            let plan = llm_harmony::inventory::plan::build_plan(arts, &inv.graph);
+            print!("{}", llm_harmony::render_ls::render_plan(&plan));
             ExitCode::SUCCESS
         }
     }
