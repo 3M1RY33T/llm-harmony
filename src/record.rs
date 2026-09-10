@@ -142,7 +142,13 @@ mod tests {
     }
 
     fn model(id: &str, state: State, ctx: Option<u32>) -> LoadedModel {
-        LoadedModel { id: id.into(), state, context_tokens: ctx, weights_bytes: None }
+        LoadedModel {
+            id: id.into(),
+            state,
+            context_tokens: ctx,
+            weights_bytes: None,
+            artifact_path: None,
+        }
     }
 
     fn row(kind: ProviderKind, outcome: Outcome, fp: Option<u64>) -> ProviderRow {

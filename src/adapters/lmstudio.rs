@@ -54,6 +54,11 @@ impl Adapter for LmStudio {
                     // LM Studio publishes no artifact size on this endpoint or
                     // on /v1/models. Verified 2026-09-09.
                     weights_bytes: None,
+                    // Nor a path: its entries carry publisher, arch,
+                    // quantization and state, and nothing that locates the
+                    // file. Verified live 2026-09-10. Placement bridges this
+                    // provider by name and marks the result inferred.
+                    artifact_path: None,
                 })
             })
             .collect())

@@ -59,6 +59,8 @@ impl Adapter for Vllm {
                     weights_bytes: m["memory_gb"]
                         .as_f64()
                         .map(|g| (g * GIB) as u64),
+                    // The manager publishes the model directory outright.
+                    artifact_path: m["source"].as_str().map(str::to_string),
                 })
             })
             .collect())

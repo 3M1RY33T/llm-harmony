@@ -9,7 +9,17 @@ use crate::record::Observation;
 pub enum Basis {
     /// Real observations of this exact shape.
     Measured,
-    /// Never seen. Not a number.
+    /// A figure the provider or the disk ledger declares -- vLLM-MLX's
+    /// `memory_gb`, Ollama's `size`, or the artifact's size on disk.
+    ///
+    /// **A floor, never a peak.** It covers weights only: vLLM-MLX's own
+    /// startup log says so, and `docs/design.md` section 5 makes the same
+    /// point -- the KV cache and activations are the part that actually
+    /// kills you. Admitting on a declared figure is admitting on an
+    /// under-estimate, which is why it is ranked below measurement and
+    /// reported as what it is.
+    Declared,
+    /// Never seen and nothing declared. Not a number.
     Unknown,
 }
 
@@ -26,6 +36,22 @@ pub struct Estimate {
 impl Estimate {
     fn unknown() -> Estimate {
         Estimate { bytes: None, basis: Basis::Unknown, samples: 0, spread_bytes: None }
+    }
+}
+
+/// Fall back to a declared figure when nothing has been measured.
+///
+/// Without this, `resolve` denies every model that has never been loaded --
+/// which on a fresh corpus is nearly all of them, making the whole verb
+/// useless. A declared floor is worse than a measurement and far better than
+/// a refusal, provided it is labelled.
+pub fn with_declared(measured: Estimate, declared_bytes: Option<u64>) -> Estimate {
+    if !matches!(measured.basis, Basis::Unknown) {
+        return measured;
+    }
+    match declared_bytes {
+        Some(b) => Estimate { bytes: Some(b), basis: Basis::Declared, samples: 0, spread_bytes: None },
+        None => measured,
     }
 }
 

@@ -17,6 +17,21 @@ pub fn render_estimate(e: &Estimate, machine: &Machine, reserve: Option<u64>) ->
 
     let mut out = String::new();
     match (e.bytes, e.basis) {
+        (Some(bytes), Basis::Declared) => {
+            out.push_str(&format!(
+                "  predicted  {:>9}   (declared by the provider — weights only)\n",
+                human_bytes(bytes)
+            ));
+            out.push_str(&format!(
+                "  headroom   {:>9}   ({} free \u{2212} {} reserve)\n",
+                human_bytes(headroom), human_bytes(free), human_bytes(reserve)
+            ));
+            out.push_str(if bytes <= headroom {
+                "  verdict    fits, on a floor — the KV cache is not counted\n"
+            } else {
+                "  verdict    WOULD NOT FIT\n"
+            });
+        }
         (Some(bytes), Basis::Measured) => {
             let spread = e
                 .spread_bytes

@@ -27,6 +27,16 @@ impl LlamaCpp {
     }
 }
 
+/// The path the router will serve this entry from.
+///
+/// `status.args` is the full argv the router would exec, and `--model <path>`
+/// is in it whether or not the model is resident. Captured live 2026-09-10.
+fn model_arg(m: &serde_json::Value) -> Option<String> {
+    let args = m["status"]["args"].as_array()?;
+    let i = args.iter().position(|a| a.as_str() == Some("--model"))?;
+    Some(args.get(i + 1)?.as_str()?.to_string())
+}
+
 impl Adapter for LlamaCpp {
     fn kind(&self) -> ProviderKind {
         ProviderKind::LlamaCpp
@@ -58,10 +68,10 @@ impl Adapter for LlamaCpp {
                     // live 2026-09-09 against llama.cpp b10240. `None` is the
                     // honest answer; the previous `meta.n_ctx` was invented.
                     context_tokens: None,
-                    // Nor a size. The artifact path is in `status.args` as
-                    // `--model <path>`, which the disk ledger could stat --
-                    // but that is slice 2's job, not this adapter's.
+                    // No size either. The path below is what lets the disk
+                    // ledger supply one.
                     weights_bytes: None,
+                    artifact_path: model_arg(m),
                 })
             })
             .collect())

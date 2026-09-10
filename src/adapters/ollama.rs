@@ -42,6 +42,10 @@ impl Adapter for Ollama {
                 state: State::Loaded,
                 context_tokens: m["context_length"].as_u64().map(|n| n as u32),
                 weights_bytes: m["size"].as_u64(),
+                // /api/ps carries a digest, not a path. The blob it names is
+                // resolvable, but only through slice 2's scanner, which owns
+                // the blobs directory layout.
+                artifact_path: None,
             });
         }
 
@@ -63,6 +67,7 @@ impl Adapter for Ollama {
                     state: State::NotLoaded,
                     context_tokens: None,
                     weights_bytes: m["size"].as_u64(),
+                    artifact_path: None,
                 });
             }
         }

@@ -74,6 +74,15 @@ pub struct LoadedModel {
     pub state: State,
     pub context_tokens: Option<u32>,
     pub weights_bytes: Option<u64>,
+    /// Where the weights live, when the provider says so.
+    ///
+    /// This is the identity placement keys on. Names differ across providers
+    /// for the same model -- measured 2026-09-10, canonical-name matching
+    /// bridged one of three cross-provider cases -- while a path resolves to a
+    /// `FileKey` the disk ledger already indexes, which is proof rather than
+    /// inference. LM Studio publishes none, and is bridged by name with the
+    /// inference marked.
+    pub artifact_path: Option<String>,
 }
 
 impl LoadedModel {
@@ -83,6 +92,7 @@ impl LoadedModel {
             state: State::NotLoaded,
             context_tokens: None,
             weights_bytes: None,
+            artifact_path: None,
         }
     }
 }

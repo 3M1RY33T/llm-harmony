@@ -98,6 +98,7 @@ mod tests {
             state: State::Loaded,
             context_tokens: Some(8192),
             weights_bytes: weights,
+            artifact_path: None,
         }
     }
 

@@ -42,6 +42,16 @@ enum Command {
         #[arg(long)]
         live: bool,
     },
+    /// Where should a request for this model go?
+    Resolve {
+        model: String,
+        #[arg(long)]
+        context: Option<u32>,
+        #[arg(long, value_name = "BYTES")]
+        reserve: Option<u64>,
+        #[arg(long)]
+        json: bool,
+    },
     /// Write a launchd agent for a provider. Writes to ~/Library/LaunchAgents.
     Install {
         provider: String,
@@ -166,6 +176,68 @@ fn main() -> ExitCode {
                 print!("{}", llm_harmony::render_ls::render_ls(&inv));
             }
             ExitCode::SUCCESS
+        }
+        Command::Resolve { model, context, reserve, json } => {
+            let config = match Config::load(None) {
+                Ok(c) => c,
+                Err(e) => { eprintln!("llm-harmony: {e}"); return ExitCode::FAILURE; }
+            };
+            let machine = match Machine::read() {
+                Ok(m) => m,
+                Err(e) => { eprintln!("llm-harmony: {e}"); return ExitCode::FAILURE; }
+            };
+            let reserve = reserve
+                .unwrap_or(llm_harmony::render_estimate::DEFAULT_RESERVE_BYTES);
+            let http = Http::new(Duration::from_millis(1500));
+            let ledger = Ledger::assemble(&config, &http, machine);
+            let inventory = llm_harmony::inventory::Inventory::scan_offline(None);
+
+            let candidates =
+                llm_harmony::resolve::identity::candidates(&ledger, &inventory, &model);
+            let corpus = llm_harmony::estimate::corpus::load_default();
+            // A declared floor beats a refusal when nothing has been measured.
+            // Provider figures first (vLLM-MLX publishes memory_gb, Ollama
+            // size), then the artifact's own size from the disk ledger.
+            let declared = candidates.iter().find_map(|c| {
+                ledger.rows.iter().find(|r| r.kind == c.provider).and_then(|r| {
+                    match &r.outcome {
+                        llm_harmony::ledger::Outcome::Ok(ms) => ms
+                            .iter()
+                            .find(|m| m.id == c.provider_model_id)
+                            .and_then(|m| m.weights_bytes),
+                        _ => None,
+                    }
+                }).or_else(|| {
+                    c.artifact.as_ref().and_then(|id| {
+                        inventory.artifacts.iter().find(|a| &a.id == id).map(|a| a.bytes)
+                    })
+                })
+            });
+            let est = llm_harmony::estimate::estimator::with_declared(
+                llm_harmony::estimate::estimator::for_model(&corpus, &model, context),
+                declared,
+            );
+            let decision =
+                llm_harmony::resolve::decide::decide(&candidates, &est, &machine, reserve);
+
+            let denied = matches!(decision, llm_harmony::resolve::decide::Decision::Deny { .. });
+            if json {
+                let doc = serde_json::json!({
+                    // Its own schema: Delroy pins this, and slice 3 already
+                    // learned what sharing a version constant costs.
+                    "schema": 1,
+                    "model": model,
+                    "decision": decision,
+                    "estimate": est,
+                });
+                println!("{}", serde_json::to_string_pretty(&doc).unwrap());
+            } else {
+                print!(
+                    "{}",
+                    llm_harmony::render_resolve::render(&decision, &est, &machine, reserve)
+                );
+            }
+            if denied { ExitCode::FAILURE } else { ExitCode::SUCCESS }
         }
         Command::Install { provider, dry_run } => {
             let p = match provider_config(&provider) {

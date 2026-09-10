@@ -256,3 +256,39 @@ fn vllm_probe_rejects_lmstudio_style_error_bodies() {
     let err = Vllm.probe(&http(), &s.base_url()).unwrap_err();
     assert_eq!(err, ProbeError::KindMismatch { expected: ProviderKind::Vllm });
 }
+
+/// Three providers publish the artifact path outright. Captured live
+/// 2026-09-10; this is what makes placement a fact rather than a guess.
+/// Name matching, measured on the same day, bridged one of three
+/// cross-provider cases.
+#[test]
+fn llamacpp_reports_the_artifact_path_from_status_args() {
+    let models = fixture("llamacpp/v1-models.json");
+    let s = support::StubServer::start(support::routes(&[("/v1/models", &models)]));
+    let out = LlamaCpp.list(&http(), &s.base_url()).unwrap();
+    let p = out[0].artifact_path.as_deref().expect("--model is in status.args");
+    assert!(p.ends_with(".gguf"), "{p}");
+    assert!(p.starts_with('/'), "an absolute path: {p}");
+}
+
+#[test]
+fn vllm_reports_the_artifact_path_from_source() {
+    let body = fixture("vllm/v1-status.json");
+    let s = support::StubServer::start(support::routes(&[("/v1/status", &body)]));
+    let out = Vllm.list(&http(), &s.base_url()).unwrap();
+    assert!(out[0].artifact_path.as_deref().unwrap().starts_with('/'));
+}
+
+/// LM Studio publishes no path at all -- verified live: its entries carry only
+/// publisher, arch, quantization and state. Placement must bridge it by name
+/// and say that it did.
+#[test]
+fn lmstudio_reports_no_artifact_path() {
+    let body = fixture("lmstudio/models-none-loaded.json");
+    let s = support::StubServer::start_lmstudio_style(support::routes(&[(
+        "/api/v0/models",
+        &body,
+    )]));
+    let out = LmStudio.list(&http(), &s.base_url()).unwrap();
+    assert!(out.iter().all(|m| m.artifact_path.is_none()));
+}
