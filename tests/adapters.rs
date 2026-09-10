@@ -209,18 +209,45 @@ fn llamacpp_probe_rejects_lmstudio_on_the_same_shape() {
 
 use llm_harmony::adapters::vllm::Vllm;
 
-/// vLLM-MLX reports neither a window nor a size. It gets None, not a guess.
+/// Captured live 2026-09-10. `/v1/models` advertises what the registry *can*
+/// serve; only `/v1/status` says what is resident.
 #[test]
-fn vllm_reports_a_model_with_no_window_and_no_weights() {
-    let body = fixture("vllm/v1-models.json");
-    let s = support::StubServer::start(support::routes(&[("/v1/models", &body)]));
+fn vllm_reads_residency_from_the_loaded_flag_not_from_presence() {
+    let body = fixture("vllm/v1-status.json");
+    let s = support::StubServer::start(support::routes(&[("/v1/status", &body)]));
     let out = Vllm.list(&http(), &s.base_url()).unwrap();
+    assert_eq!(out.len(), 2);
+    assert!(
+        out.iter().all(|m| m.state == State::NotLoaded),
+        "advertised is not resident: {out:?}"
+    );
+}
 
-    assert_eq!(out.len(), 1);
-    assert_eq!(out[0].id, "Qwen3.5-9B-MLX-4bit");
-    assert_eq!(out[0].state, State::Loaded, "presence in /v1/models is residency");
-    assert_eq!(out[0].context_tokens, None, "vLLM-MLX publishes no window; never guess one");
-    assert_eq!(out[0].weights_bytes, None);
+#[test]
+fn vllm_marks_the_one_model_the_manager_reports_as_loaded() {
+    let body = fixture("vllm/v1-status-one-loaded.json");
+    let s = support::StubServer::start(support::routes(&[("/v1/status", &body)]));
+    let out = Vllm.list(&http(), &s.base_url()).unwrap();
+    assert_eq!(out.iter().filter(|m| m.state == State::Loaded).count(), 1);
+}
+
+/// The only provider of the four that publishes a per-model memory figure.
+#[test]
+fn vllm_reports_the_managers_own_memory_estimate_as_weights() {
+    let body = fixture("vllm/v1-status.json");
+    let s = support::StubServer::start(support::routes(&[("/v1/status", &body)]));
+    let out = Vllm.list(&http(), &s.base_url()).unwrap();
+    let w = out[0].weights_bytes.expect("memory_gb is published");
+    assert!(w > 4_000_000_000 && w < 8_000_000_000, "got {w}");
+}
+
+/// Still no serving window, so still None rather than a guess.
+#[test]
+fn vllm_publishes_no_serving_window_so_reports_none() {
+    let body = fixture("vllm/v1-status.json");
+    let s = support::StubServer::start(support::routes(&[("/v1/status", &body)]));
+    let out = Vllm.list(&http(), &s.base_url()).unwrap();
+    assert!(out.iter().all(|m| m.context_tokens.is_none()));
 }
 
 #[test]

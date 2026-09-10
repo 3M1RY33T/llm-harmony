@@ -1,0 +1,24 @@
+{
+  "status": "running",
+  "model_manager": {
+    "memory_budget_gb": 14.0,
+    "models": [
+      {
+        "id": "Qwen3.5-9B-Defiant-Heretic-MLX-4bit",
+        "status": "unloaded",
+        "loaded": false,
+        "owned_by": "vllm-mlx",
+        "source": "/Users/3m1ry33t/.vllm-mlx/models/Qwen3.5-9B-Defiant-Heretic-NEO-IMATRIX-MAX-MTP-MLX",
+        "memory_gb": 4.7
+      },
+      {
+        "id": "Qwen3.5-9B-Defiant-Heretic-MLX-6bit",
+        "status": "unloaded",
+        "loaded": false,
+        "owned_by": "vllm-mlx",
+        "source": "/Users/3m1ry33t/.vllm-mlx/models/Qwen3.5-9B-Defiant-Heretic-NEO-IMATRIX-MAX-MTP-MLX-6bit",
+        "memory_gb": 6.8
+      }
+    ]
+  }
+}

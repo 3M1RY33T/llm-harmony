@@ -12,11 +12,13 @@ that drifts from the real server is worse than no fixture.
 | `ollama/ps-one-loaded.json` | Derived from `tags.json` plus the `/api/ps` fields documented upstream |
 | `llamacpp/v1-models.json` | **Captured live** 2026-09-09 from the router on `:8080` |
 | `llamacpp/v1-models-one-loaded.json` | Derived from the above; `status.value` flipped to `loaded` |
-| `vllm/v1-models.json` | **UNVERIFIED** — constructed from `docs/field-notes.md`; vLLM-MLX was not running |
+| `vllm/v1-status.json` | **Captured live** 2026-09-10 from `/v1/status` on `:8000` |
+| `vllm/v1-status-one-loaded.json` | Derived from the above; one entry's `loaded` flipped to true |
 
-Re-capture the remaining UNVERIFIED fixture the next time vLLM-MLX runs, then
-update this table. If a re-capture disagrees with a fixture, the adapter is
-wrong, not the server.
+**No UNVERIFIED fixtures remain.** Every one above came from a live server.
+
+The lesson cost two adapters. If a re-capture disagrees with a fixture, the
+adapter is wrong, not the server.
 
 **That is exactly what happened to llama.cpp on 2026-09-09.** The constructed
 fixture claimed a `meta.n_ctx` block and a `/running` endpoint. The real router
