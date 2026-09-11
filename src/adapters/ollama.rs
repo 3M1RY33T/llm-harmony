@@ -3,7 +3,8 @@ use std::collections::HashMap;
 use crate::http::Http;
 use crate::provider::{Actuation, Adapter, LoadedModel, ProbeError, ProviderKind, State};
 
-/// How long a harmony-initiated load stays resident without use.
+/// How long a harmony-initiated load stays resident without use, when the
+/// caller named no TTL of its own.
 ///
 /// Not `-1`: a model harmony loaded and nobody used should eventually leave,
 /// and Ollama's own TTL is the mechanism for that. Pins are how a model is
@@ -102,7 +103,13 @@ impl Adapter for Ollama {
         request: &crate::provider::LoadRequest,
     ) -> Result<(), crate::provider::ActuateError> {
         let path = Ollama::endpoint(http, base, &request.model);
-        let mut body = Ollama::residency_body(path, &request.model, KEEP_ALIVE.into());
+        // Seconds when the caller named a TTL, and Ollama's duration string
+        // otherwise: the API takes either, and a bare number is seconds.
+        let keep_alive = match request.ttl_seconds {
+            Some(secs) => serde_json::Value::from(secs),
+            None => KEEP_ALIVE.into(),
+        };
+        let mut body = Ollama::residency_body(path, &request.model, keep_alive);
         // num_ctx is where Ollama takes a window, and the window is most of
         // what a load costs.
         if let Some(ctx) = request.context_tokens {

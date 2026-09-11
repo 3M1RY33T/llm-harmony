@@ -358,7 +358,7 @@ fn a_self_managed_refusal_does_not_touch_the_network() {
         &http(),
         // A port nothing is listening on: reaching it would cost a timeout.
         "http://127.0.0.1:1",
-        &LoadRequest { model: "m".into(), context_tokens: None },
+        &LoadRequest { model: "m".into(), context_tokens: None, ttl_seconds: None },
     );
     assert!(started.elapsed() < Duration::from_millis(100), "it dialled out");
 }
@@ -383,7 +383,7 @@ fn ollama_unloads_by_asking_for_a_zero_keep_alive() {
 fn ollama_loads_by_asking_for_a_nonzero_keep_alive() {
     let seen = support::RecordingServer::start();
     Ollama
-        .load(&http(), &seen.base_url(), &LoadRequest { model: "qwen3:14b".into(), context_tokens: Some(8192) })
+        .load(&http(), &seen.base_url(), &LoadRequest { model: "qwen3:14b".into(), context_tokens: Some(8192), ttl_seconds: None })
         .unwrap();
 
     let req = seen.last_request();
@@ -400,6 +400,7 @@ fn lmstudio_load_passes_the_requested_context_to_the_cli() {
     let argv = LmStudio::load_argv(&LoadRequest {
         model: "qwen3-14b".into(),
         context_tokens: Some(8192),
+        ttl_seconds: None,
     });
     assert_eq!(argv, vec!["lms", "load", "qwen3-14b", "--yes", "--context-length", "8192"]);
 }
@@ -408,7 +409,11 @@ fn lmstudio_load_passes_the_requested_context_to_the_cli() {
 /// guess than any this project could invent.
 #[test]
 fn lmstudio_load_omits_the_window_when_none_was_asked_for() {
-    let argv = LmStudio::load_argv(&LoadRequest { model: "m".into(), context_tokens: None });
+    let argv = LmStudio::load_argv(&LoadRequest {
+        model: "m".into(),
+        context_tokens: None,
+        ttl_seconds: None,
+    });
     assert_eq!(argv, vec!["lms", "load", "m", "--yes"]);
 }
 
@@ -431,7 +436,11 @@ fn ollama_loads_an_embedding_model_through_the_embed_endpoint() {
         .load(
             &http(),
             &seen.base_url(),
-            &LoadRequest { model: "nomic-embed-text:latest".into(), context_tokens: None },
+            &LoadRequest {
+                model: "nomic-embed-text:latest".into(),
+                context_tokens: None,
+                ttl_seconds: None,
+            },
         )
         .unwrap();
 
@@ -449,7 +458,7 @@ fn ollama_loads_a_chat_model_through_the_generate_endpoint() {
     let seen = support::RecordingServer::start_with(canned);
 
     Ollama
-        .load(&http(), &seen.base_url(), &LoadRequest { model: "qwen3:14b".into(), context_tokens: None })
+        .load(&http(), &seen.base_url(), &LoadRequest { model: "qwen3:14b".into(), context_tokens: None, ttl_seconds: None })
         .unwrap();
 
     assert_eq!(seen.last_request().path, "/api/generate");
@@ -481,7 +490,58 @@ fn lmstudio_load_is_a_no_op_when_the_model_is_already_resident() {
         .load(
             &http(),
             &s.base_url(),
-            &LoadRequest { model: loaded.id.clone(), context_tokens: Some(4096) },
+            &LoadRequest {
+                model: loaded.id.clone(),
+                context_tokens: Some(4096),
+                ttl_seconds: None,
+            },
         )
         .expect("already resident is success, not a second instance");
+}
+
+// --- The idle TTL, and pinning a switch's target provider (r26, Task 1) ---
+
+/// The TTL is the provider's own idle timer -- LM Studio takes `--ttl` in
+/// seconds. Delroy's hosting settings reach the provider through this and
+/// nothing else: neither Delroy nor harmony runs a timer of its own.
+#[test]
+fn lmstudio_load_passes_a_ttl_when_one_was_asked_for() {
+    let argv = LmStudio::load_argv(&LoadRequest {
+        model: "qwen3-14b".into(),
+        context_tokens: Some(8192),
+        ttl_seconds: Some(1800),
+    });
+    assert_eq!(
+        argv,
+        vec!["lms", "load", "qwen3-14b", "--yes", "--context-length", "8192", "--ttl", "1800"]
+    );
+}
+
+/// And omits it otherwise, leaving the provider's own default alone.
+#[test]
+fn lmstudio_load_omits_the_ttl_when_none_was_asked_for() {
+    let argv = LmStudio::load_argv(&LoadRequest {
+        model: "m".into(),
+        context_tokens: None,
+        ttl_seconds: None,
+    });
+    assert_eq!(argv, vec!["lms", "load", "m", "--yes"]);
+}
+
+/// Ollama spells the same idea `keep_alive`, in seconds.
+#[test]
+fn ollama_load_passes_a_ttl_as_keep_alive() {
+    let seen = support::RecordingServer::start();
+    Ollama
+        .load(
+            &http(),
+            &seen.base_url(),
+            &LoadRequest {
+                model: "qwen3:14b".into(),
+                context_tokens: None,
+                ttl_seconds: Some(1800),
+            },
+        )
+        .unwrap();
+    assert_eq!(seen.last_request().json["keep_alive"], 1800);
 }

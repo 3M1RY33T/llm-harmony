@@ -57,8 +57,13 @@ enum Command {
         model: String,
         #[arg(long)]
         context: Option<u32>,
+        /// Serve it from this provider, rather than whichever one resolves.
         #[arg(long)]
         provider: Option<String>,
+        /// How long the provider should hold it without use. Its own default
+        /// otherwise -- harmony runs no timer.
+        #[arg(long, value_name = "SECONDS")]
+        ttl: Option<u64>,
         /// Protect it from eviction once it is loaded.
         #[arg(long)]
         pin: bool,
@@ -92,6 +97,13 @@ enum Command {
         to: String,
         #[arg(long)]
         context: Option<u32>,
+        /// Pin the *target* to this provider. `from` is still matched by model
+        /// id across providers, which is what makes a stale one harmless.
+        #[arg(long)]
+        provider: Option<String>,
+        /// How long the provider should hold the target without use.
+        #[arg(long, value_name = "SECONDS")]
+        ttl: Option<u64>,
         #[arg(long)]
         pin: bool,
         #[arg(long, value_name = "BYTES")]
@@ -165,6 +177,28 @@ enum Command {
         /// Poll providers so a served model produces a refusal.
         #[arg(long)]
         live: bool,
+    },
+    /// Print one removal plan per model for every superseded build. Never
+    /// executes.
+    ///
+    /// `rm` asks "may I remove this model?"; `clean` asks it of all of them.
+    /// A refusal takes one model off the table rather than the whole run.
+    Clean {
+        /// Select builds a better one supersedes: lower bits, same model, same
+        /// format, with the better build left in place. The only selector
+        /// there is -- `reproducible` is a priced deletion, not a clean.
+        #[arg(long)]
+        redundant: bool,
+        /// Print the plan and stop. The only mode this slice has, and the
+        /// posture docs/inventory.md section 7 question 2 argues for.
+        #[arg(long, default_value_t = true)]
+        dry_run: bool,
+        /// Poll providers, so a served model produces a refusal and the HF
+        /// cache stops being assumed to be scanned by a router that is down.
+        #[arg(long)]
+        live: bool,
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -255,7 +289,7 @@ fn emit(report: &llm_harmony::actuate::run::Report, json: bool) -> ExitCode {
 #[allow(clippy::too_many_arguments)]
 fn actuate(
     verb: &'static str,
-    request: llm_harmony::actuate::plan::Request,
+    mut request: llm_harmony::actuate::plan::Request,
     provider: Option<String>,
     pin: bool,
     reserve: Option<u64>,
@@ -263,10 +297,16 @@ fn actuate(
     config_path: Option<&std::path::Path>,
     json: bool,
 ) -> ExitCode {
+    // A named provider is a constraint on the target, carried into the plan
+    // rather than validated and dropped: a caller that says where the model
+    // lives must not be quietly resolved somewhere else.
     if let Some(p) = &provider {
-        if let Err(e) = p.parse::<llm_harmony::provider::ProviderKind>() {
-            eprintln!("llm-harmony: {e}");
-            return ExitCode::FAILURE;
+        match p.parse::<llm_harmony::provider::ProviderKind>() {
+            Ok(kind) => request.provider = Some(kind),
+            Err(e) => {
+                eprintln!("llm-harmony: {e}");
+                return ExitCode::FAILURE;
+            }
         }
     }
     let (config, machine) = match setup(config_path) {
@@ -430,21 +470,25 @@ fn main() -> ExitCode {
             }
             ExitCode::SUCCESS
         }
-        Command::Load { model, context, provider, pin, reserve, floor, config, json } => {
+        Command::Load { model, context, provider, ttl, pin, reserve, floor, config, json } => {
             let request = llm_harmony::actuate::plan::Request {
                 model,
                 context_tokens: context,
                 free_first: None,
+                provider: None,
+                ttl_seconds: ttl,
             };
             actuate("load", request, provider, pin, reserve, floor, config.as_deref(), json)
         }
-        Command::Switch { from, to, context, pin, reserve, floor, config, json } => {
+        Command::Switch { from, to, context, provider, ttl, pin, reserve, floor, config, json } => {
             let request = llm_harmony::actuate::plan::Request {
                 model: to,
                 context_tokens: context,
                 free_first: Some(from),
+                provider: None,
+                ttl_seconds: ttl,
             };
-            actuate("switch", request, None, pin, reserve, floor, config.as_deref(), json)
+            actuate("switch", request, provider, pin, reserve, floor, config.as_deref(), json)
         }
         Command::Unload { model, provider, config, json } => {
             let kind = match provider.as_deref().map(str::parse::<llm_harmony::provider::ProviderKind>) {
@@ -793,6 +837,35 @@ fn main() -> ExitCode {
             }
             let plan = llm_harmony::inventory::plan::build_plan(arts, &inv.graph);
             print!("{}", llm_harmony::render_ls::render_plan(&plan));
+            ExitCode::SUCCESS
+        }
+        Command::Clean { redundant, dry_run, live, json } => {
+            // No default selector. `--redundant` is the safest class there is
+            // and still the one the user has to name, so adding
+            // `--reproducible` later cannot silently widen an old command.
+            if !redundant {
+                eprintln!("llm-harmony: nothing selected \u{2014} pass --redundant");
+                return ExitCode::FAILURE;
+            }
+            if !dry_run {
+                eprintln!("llm-harmony: real removal is not implemented in this slice");
+                return ExitCode::FAILURE;
+            }
+            let inv = inventory(live);
+            let plan = llm_harmony::inventory::clean::redundant(&inv);
+            if json {
+                let doc = serde_json::json!({
+                    "schema": llm_harmony::ledger::SCHEMA,
+                    "selector": "redundant",
+                    "reclaims_bytes": plan.reclaims_bytes,
+                    "artifact_count": plan.artifact_count(),
+                    "models": plan.models,
+                    "skipped": plan.skipped,
+                });
+                println!("{}", serde_json::to_string_pretty(&doc).unwrap());
+            } else {
+                print!("{}", llm_harmony::render_ls::render_clean(&plan));
+            }
             ExitCode::SUCCESS
         }
     }

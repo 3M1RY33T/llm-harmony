@@ -264,16 +264,18 @@ fn execute(
                 unloaded.push(UnloadRecord { provider, model, reason });
             }
 
-            Action::Load { provider, model, context_tokens } => {
+            Action::Load { provider, model, context_tokens, ttl_seconds } => {
                 let Some(url) = url_for(config, provider) else { continue };
                 let adapter = adapter_for(provider);
-                let req = LoadRequest { model: model.clone(), context_tokens };
+                let req = LoadRequest { model: model.clone(), context_tokens, ttl_seconds };
 
                 let start = match adapter.actuation() {
                     Actuation::ModelLevel => adapter.load(http, &url, &req),
                     // No load verb: residency happens on first request, so
                     // harmony sends the one it is allowed to send.
-                    Actuation::SelfManaged { .. } => warm_up(http, &url, &model, context_tokens),
+                    Actuation::SelfManaged { .. } => {
+                        warm_up(http, &url, &model, context_tokens, ttl_seconds)
+                    }
                 };
                 if let Err(e) = start {
                     return finish(
@@ -460,8 +462,11 @@ fn warm_up(
     url: &str,
     model: &str,
     context_tokens: Option<u32>,
+    ttl_seconds: Option<u64>,
 ) -> Result<(), crate::provider::ActuateError> {
-    let _ = context_tokens; // the window is a server-side flag on these two
+    // Both are server-side flags on these two providers: there is no load verb
+    // to carry a window, and no idle timer harmony can set per model.
+    let _ = (context_tokens, ttl_seconds);
     let body = serde_json::json!({
         "model": model,
         "prompt": WARM_UP_SENTINEL,

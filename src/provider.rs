@@ -225,13 +225,20 @@ pub trait Adapter: Send + Sync {
     ) -> Result<bool, ProbeError>;
 }
 
-/// What to load, and how much window to give it.
+/// What to load, how much window to give it, and how long to keep it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoadRequest {
     pub model: String,
     /// `None` leaves the provider's own default alone -- a better guess than
     /// any this project could invent.
     pub context_tokens: Option<u32>,
+    /// How long the provider should hold this model without use.
+    ///
+    /// Harmony runs no timer of its own and neither does its caller: every
+    /// provider already has an idle mechanism (`lms --ttl`, Ollama's
+    /// `keep_alive`) and this is the one channel that reaches it. `None`
+    /// leaves that mechanism at its own default, same rule as the window.
+    pub ttl_seconds: Option<u64>,
 }
 
 #[derive(Debug)]

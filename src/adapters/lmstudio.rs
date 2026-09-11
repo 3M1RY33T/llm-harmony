@@ -138,6 +138,12 @@ impl LmStudio {
             argv.push("--context-length".to_string());
             argv.push(ctx.to_string());
         }
+        // LM Studio's own idle timer, in seconds. Omitted when nothing asked
+        // for one, which leaves whatever the app is configured with alone.
+        if let Some(ttl) = request.ttl_seconds {
+            argv.push("--ttl".to_string());
+            argv.push(ttl.to_string());
+        }
         argv
     }
 

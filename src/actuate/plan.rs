@@ -57,6 +57,17 @@ pub struct Request {
     pub context_tokens: Option<u32>,
     /// `switch`: the model to free first, whatever the arithmetic says.
     pub free_first: Option<String>,
+    /// Which provider must serve the **target**, when the caller knows.
+    ///
+    /// Without it the model name is resolved by identity and the best
+    /// candidate wins, which is right for a human typing a name. A caller
+    /// that already knows where the model lives -- Delroy's picker names
+    /// `<provider>/<id>` -- pins it here instead of hoping the resolver
+    /// agrees. It never constrains `free_first`, which is matched by model id
+    /// across providers so that a stale one is harmless.
+    pub provider: Option<ProviderKind>,
+    /// How long the provider should hold the target once it is loaded.
+    pub ttl_seconds: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -72,7 +83,12 @@ pub enum UnloadReason {
 #[serde(tag = "action", rename_all = "kebab-case")]
 pub enum Action {
     Unload { provider: ProviderKind, model: String, reason: UnloadReason },
-    Load { provider: ProviderKind, model: String, context_tokens: Option<u32> },
+    Load {
+        provider: ProviderKind,
+        model: String,
+        context_tokens: Option<u32>,
+        ttl_seconds: Option<u64>,
+    },
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -101,11 +117,16 @@ pub fn plan(
     reserve_bytes: u64,
     request: &Request,
 ) -> Plan {
-    let Some(target) = choose_candidate(candidates) else {
+    let Some(target) = choose_candidate(candidates, request.provider) else {
         return Plan::Refused {
-            reason: format!("no provider serves `{}`", request.model),
+            // Naming a provider narrows the failure: "nothing serves this" and
+            // "that one does not" are different problems with different fixes.
+            reason: match request.provider {
+                Some(p) => format!("`{}` is not served by {p}", request.model),
+                None => format!("no provider serves `{}`", request.model),
+            },
             pinned_blockers: Vec::new(),
-            alternatives: Vec::new(),
+            alternatives: alternatives(candidates, None),
         };
     };
 
@@ -220,15 +241,20 @@ pub fn plan(
     }
 }
 
-/// A reported artifact beats a derived one, as in `resolve::decide`.
-fn choose_candidate(candidates: &[Candidate]) -> Option<&Candidate> {
-    candidates.iter().min_by_key(|c| {
-        if c.provenance.is_recorded() {
-            0
-        } else {
-            1
-        }
-    })
+/// A reported artifact beats a derived one, as in `resolve::decide` -- among
+/// the candidates the caller left open. A named provider is a filter, not a
+/// preference: a caller that says `lmstudio` gets lmstudio or gets a refusal.
+fn choose_candidate(candidates: &[Candidate], provider: Option<ProviderKind>) -> Option<&Candidate> {
+    candidates
+        .iter()
+        .filter(|c| provider.is_none_or(|p| c.provider == p))
+        .min_by_key(|c| {
+            if c.provenance.is_recorded() {
+                0
+            } else {
+                1
+            }
+        })
 }
 
 fn load_action(target: &Candidate, request: &Request) -> Action {
@@ -236,6 +262,7 @@ fn load_action(target: &Candidate, request: &Request) -> Action {
         provider: target.provider,
         model: target.provider_model_id.clone(),
         context_tokens: request.context_tokens,
+        ttl_seconds: request.ttl_seconds,
     }
 }
 
@@ -376,11 +403,17 @@ mod tests {
     }
 
     fn req(model: &str) -> Request {
-        Request { model: model.into(), context_tokens: None, free_first: None }
+        Request {
+            model: model.into(),
+            context_tokens: None,
+            free_first: None,
+            provider: None,
+            ttl_seconds: None,
+        }
     }
 
     fn req_switch(from: &str, to: &str) -> Request {
-        Request { model: to.into(), context_tokens: None, free_first: Some(from.into()) }
+        Request { free_first: Some(from.into()), ..req(to) }
     }
 
     /// A pin is a veto. The room exists, the model is idle, and it still does

@@ -115,3 +115,90 @@ pub fn render_plan(plan: &RemovalPlan) -> String {
     out.push_str("dry run \u{2014} llm-harmony cannot delete\n");
     out
 }
+
+pub fn render_clean(plan: &crate::inventory::clean::CleanPlan) -> String {
+    use std::collections::BTreeMap;
+
+    let mut out = String::new();
+
+    if plan.models.is_empty() && plan.skipped.is_empty() {
+        out.push_str("nothing is redundant: every build is the best of its format\n");
+        return out;
+    }
+
+    // `superseded` is the whole point of the report: a step that cannot name
+    // what survives it is a step nobody should run.
+    let mut keeps: BTreeMap<&str, &str> = BTreeMap::new();
+    for m in plan.models.iter().chain(plan.skipped.iter()) {
+        for (gone, better) in &m.superseded {
+            keeps.insert(gone.as_str(), better.as_str());
+        }
+    }
+
+    if !plan.models.is_empty() {
+        out.push_str("would remove, in order:\n\n");
+        for m in &plan.models {
+            let short: String = m.model.chars().take(44).collect();
+            out.push_str(&format!(
+                "  {:<44} reclaims {:>9}\n",
+                short,
+                human_bytes(m.plan.reclaims_bytes)
+            ));
+            for s in &m.plan.steps {
+                let note = if s.is_link {
+                    "  (alias \u{2014} frees nothing)"
+                } else {
+                    ""
+                };
+                out.push_str(&format!(
+                    "      {:>9}  {}{}\n",
+                    human_bytes(s.frees_bytes),
+                    s.path,
+                    note
+                ));
+                if let Some(better) = keeps.get(s.id.as_str()) {
+                    out.push_str(&format!("                 superseded by {better}\n"));
+                }
+            }
+            out.push('\n');
+        }
+    }
+
+    if !plan.skipped.is_empty() {
+        out.push_str("skipped \u{2014} a requirer poisons that model's whole plan:\n");
+        for m in &plan.skipped {
+            let short: String = m.model.chars().take(44).collect();
+            out.push_str(&format!("  {short}\n"));
+            let mut by_reason: BTreeMap<&str, usize> = BTreeMap::new();
+            for r in &m.plan.refusals {
+                *by_reason.entry(&r.reason).or_default() += 1;
+            }
+            for (reason, count) in by_reason.iter().take(3) {
+                out.push_str(&format!("      {reason} ({count} artifact(s))\n"));
+            }
+            if by_reason.len() > 3 {
+                out.push_str(&format!(
+                    "      \u{2026} and {} more reason(s)\n",
+                    by_reason.len() - 3
+                ));
+            }
+        }
+        out.push('\n');
+    }
+
+    if plan.models.is_empty() {
+        out.push_str("nothing planned.\n");
+        return out;
+    }
+
+    out.push_str(&"\u{2500}".repeat(80));
+    out.push('\n');
+    out.push_str(&format!(
+        "reclaims {} across {} model(s), {} artifact(s)\n",
+        human_bytes(plan.reclaims_bytes),
+        plan.models.len(),
+        plan.artifact_count()
+    ));
+    out.push_str("dry run \u{2014} llm-harmony cannot delete\n");
+    out
+}

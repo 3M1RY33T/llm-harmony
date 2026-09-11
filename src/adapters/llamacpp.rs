@@ -98,7 +98,9 @@ impl Adapter for LlamaCpp {
         _request: &crate::provider::LoadRequest,
     ) -> Result<(), crate::provider::ActuateError> {
         // No network call: there is no endpoint to reach, and a timeout would
-        // misreport "cannot" as "did not answer".
+        // misreport "cannot" as "did not answer". `ttl_seconds` is dropped
+        // here for the same reason the window is: there is no load verb to
+        // carry either, and this provider's idle behaviour is its own flag.
         Err(crate::provider::ActuateError::NotSupported { ceiling: CEILING })
     }
 
