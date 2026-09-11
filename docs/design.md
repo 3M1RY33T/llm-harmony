@@ -144,6 +144,35 @@ Per-provider modes, so trust is granted rather than assumed:
   other. Granted by declaring a `start` command in config, and used only via
   an explicit `llm-harmony install` (added 2026-09-09).
 
+### There is no rung above `manage`
+
+Decided 2026-09-11. An *exclusive* mode — harmony as the only actor permitted
+to load or evict — is what would make the ledger **true** rather than
+*observed*, and everything that needs a guarantee rather than a reading comes
+with it: reservations that hold, priority classes, preemption, exact
+accounting. It is refused, and the first of the two reasons is physical rather
+than a matter of taste.
+
+- **The granularity is not there.** §7 records that two of the four providers
+  expose no model-level unload at all, probed with all four servers up. Nobody
+  holds exclusive authority over a resource whose granularity they do not
+  control; the most such a mode could mean on half the fleet is a process and
+  a ceiling, which is what is already there.
+- **It would spend the fail-open floor to buy the guarantee.** Exclusivity
+  requires the per-provider ceilings to be switched off — that is what makes it
+  exclusive — and the section below says what a setup without them is worth.
+
+It could not be enforced in any case: `ollama run` and LM Studio's own window
+stay one click away, and neither can be intercepted. A ledger claiming an
+authority it cannot hold lies with confidence, which is strictly worse than one
+that admits it is a reading.
+
+**Reconciliation speed replaces it.** §8's *model loaded without asking* row is
+already the right response — account for it, mark it `sanctioned: false`, evict
+it first. What is missing is promptness, and the daemon (roadmap slice 7) is
+what turns *eventually, when someone next runs a command* into *within
+seconds*.
+
 ### The per-provider budgets are not superseded
 
 It would be easy to read this design as replacing `OLLAMA_MAX_LOADED_MODELS`,
@@ -201,9 +230,11 @@ that is not running is simply absent from the ledger — never an error.
 
 ## 9. Open questions
 
-1. **Advisory or enforcing by default?** `observe` everywhere is safest and
-   also useless on day one — it can warn but never prevent. Suggestion: ship
-   `observe` as the default and make `evict` a one-line opt-in per provider.
+1. ~~**Advisory or enforcing by default?**~~ **Answered 2026-09-11: advisory,
+   and `observe` stays the default.** It shipped that way, with `evict` as a
+   one-line opt-in per provider, and §6 now records why there will be no
+   enforcing rung above `manage` at all — the refusal rests on §7's measured
+   eviction granularity, not on caution about day one.
 2. **Does Delroy block on `WAIT`?** Blocking a turn on a daemon is a new failure
    mode in a tool that currently has none. A notice plus proceeding may be the
    better default, accepting that the guarantee becomes advisory.

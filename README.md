@@ -38,7 +38,9 @@ Slice 5 made it act: `load`, `unload` and `switch` change what is resident,
 admitted against the machine and supervised while they happen, with `pin` to
 take a model off the table. Two of the four providers turned out to have no
 model-level unload at all — `llm-harmony verify` prints what each one can
-really do, probed rather than remembered. Intake and conversion are next.
+really do, probed rather than remembered. Next is arbitration and set
+admission — `compare`, `lease`, `fit` and `status --budgets`, all composition
+over what is already here — then intake and conversion.
 
 | Document | What it covers |
 |---|---|
@@ -163,16 +165,20 @@ Settled in the docs, not here:
 2. ~~**How is a footprint estimated?**~~ **Answered by slice 3:** measured from
    the largest process in a provider's tree, and *unknown* rather than guessed
    for a shape never seen.
-3. **Is `DERIVES_FROM` recorded or inferred?** Still open, and now load-bearing:
-   placement would depend on it, and slice 2 forbids inferred lineage from
-   driving decisions.
+3. ~~**Is `DERIVES_FROM` recorded or inferred?**~~ **Answered 2026-09-11:
+   both** — recorded for what harmony converts, inferred and marked for what was
+   already on disk. Slice 2's rule is untouched: an inferred edge still may not
+   drive placement or deletion.
 4. **What is the memory reserve on 24 GB?** 8 GB remains a guess. A dozen
    observations is not a basis for tuning it.
 
 ## Non-goals
 
 - **Not a router, gateway, or load balancer.** It returns coordinates; it never
-  carries a request.
+  carries a request. The convenience a gateway would provide belongs in a
+  client library that speaks the four dialects — decided 2026-09-11, with
+  prefix-cache-aware placement priced as the one feature that refusal costs
+  ([`docs/architecture.md`](docs/architecture.md) §1).
 - **Starts and supervises inference servers only on request, per provider,
   opt-in.** Changed 2026-09-09; it was previously a non-goal. Harmony runs a
   `start` command *you* declare and installs it as a launchd agent, so macOS

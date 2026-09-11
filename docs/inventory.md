@@ -213,20 +213,28 @@ Two consequences worth encoding rather than rediscovering:
 
 ## 7. Open questions
 
-1. **Is `DERIVES_FROM` recorded or inferred?** Recording at conversion time is
-   exact and needs llm-harmony to have done the conversion. Inferring from names
-   is available for existing files and is a guess — and names lie, as §5 shows.
+1. ~~**Is `DERIVES_FROM` recorded or inferred?**~~ **Answered 2026-09-11:
+   both, split by who made the artifact.** Recorded at conversion time for
+   anything harmony converts — which Q3's answer now makes harmony's job —
+   and inferred from names, marked as inferred, for everything already on
+   disk. The guess survives only where there is nothing better, and it still
+   may not drive placement or deletion.
 2. **Does `rm` ever act without confirmation?** Deletion is unrecoverable and
    re-download is expensive. Dry-run-by-default is the safe posture; the cost is
    friction on the common, harmless case.
-3. **Should it manage the stores, or only report on them?** Moving models to one
-   pool would deduplicate, but it means owning layout — and every provider is
-   currently happy pointing wherever the user likes. **Narrowed 2026-09-11:**
-   `ls --duplicates` measured what a pool would deduplicate here, and the
-   answer is nothing — 146 GB, zero duplicate allocations, because the
+3. ~~**Should it manage the stores, or only report on them?**~~ Moving models
+   to one pool would deduplicate, but it means owning layout — and every
+   provider is currently happy pointing wherever the user likes. **Narrowed
+   2026-09-11:** `ls --duplicates` measured what a pool would deduplicate here,
+   and the answer is nothing — 146 GB, zero duplicate allocations, because the
    cross-store sharing on this machine is already done with symlinks. The case
    for a pool cannot be made from deduplication; it would have to be made from
-   owning intake, where placement is harmony's anyway.
+   owning intake, where placement is harmony's anyway. **Answered 2026-09-11:
+   own what harmony makes, index what it did not.** Conversions go into a store
+   harmony owns and lays out, because that is the only place where it knows the
+   lineage and the capability delta first-hand. Everything a provider's own
+   downloader put on disk is reported on and never moved. See
+   [`architecture.md`](architecture.md) §10 Q4.
 4. **Does capability-loss detection generalise?** MTP and vision tower were
    caught by diffing tensor names. Whether that finds the next kind of loss, or
    only the two already known, is untested.
@@ -234,6 +242,6 @@ Two consequences worth encoding rather than rediscovering:
    `clean --redundant`, which is right that a Q8_0 is the better artifact and
    silent that it costs ~6 GB more to load than the Q4 it supersedes. Three
    shapes: note it in the report, refuse without an explicit override, or
-   admit the survivor against the memory ledger the way slice 5 admits a job
+   admit the survivor against the memory ledger the way slice 7 admits a job
    against both. The third is the one that fits the two-ledger claim, and it is
    the most work.

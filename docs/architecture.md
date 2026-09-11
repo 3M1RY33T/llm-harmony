@@ -85,6 +85,26 @@ each provider's dialect, handle the 200-with-an-error shapes, and cope with a
 model disappearing between `RESOLVE` and the request. That is a deliberate
 trade — the alternative is inference latency and a shared crash domain.
 
+**Decided 2026-09-11: that work is absorbed once, in a client library, not in a
+proxy.** The features that would justify crossing into the request path are
+real, and are worth listing rather than waving away — one OpenAI-compatible
+endpoint, normalising the three different 200-with-an-error shapes, retry and
+failover, token-level accounting. Every one of them is a *client-side* problem
+with a client-side answer: a small library that speaks the four dialects and
+calls `RESOLVE` gives a client the convenience of a gateway while harmony
+carries no traffic. Absorbing the cost once is not the same as absorbing it in
+the middle.
+
+One feature does not survive the refusal, and it is named here so it is a
+priced loss rather than an oversight: **prefix-cache-aware placement.** Sending
+a request to whichever provider already holds its KV prefix requires the
+request. Nothing outside the request path can do it, and it is a latency win
+rather than a convenience. Accepted.
+
+A second, smaller reason to stay out: a proxy buffering several concurrent
+streams is itself a consumer of the resource this project exists to account
+for.
+
 ## 2. Two ledgers
 
 Memory and disk are the same problem at different timescales, and the machinery
@@ -292,16 +312,31 @@ crash mid-conversion is recoverable rather than a corrupt store.
 
 Slice 1 (read-only core) is built and holds up unchanged. What follows was
 reordered by the widened scope: placement depends on identity, so the inventory
-graph moves ahead of the daemon.
+graph moves ahead of the daemon. Corrected 2026-09-11 — this table predated
+actuation becoming a slice of its own, and was one behind
+[`roadmap.md`](roadmap.md) for two slices.
 
 | Slice | What | Why here |
 |---|---|---|
 | 1 ✅ | Read-only core — adapters, memory ledger, `status` | Foundation for everything; cannot unload by construction |
-| 2 | Disk ledger + model identity graph | Placement, install and clear all read from it |
-| 3 | Daemon + measured estimator | Needs continuous observation to learn footprints |
-| 4 | `RESOLVE` — placement, activation, eviction | The thing a client actually calls |
-| 5 | Intake and conversion as admitted jobs | Reuses both ledgers for fit |
-| 6 | Hosting screen API | An HTTP surface over 2, 4 and 5 |
+| 2 ✅ | Disk ledger + model identity graph | Placement, install and clear all read from it |
+| 3 ✅ | Measured estimator | A footprint has to be a measurement before anything can be admitted on it |
+| 4 ✅ | `RESOLVE` — placement and admission | The thing a client actually calls |
+| 5 ✅ | Actuation — `load`, `unload`, `switch`, `pin`, `verify` | The first slice that changes what is resident |
+| 6 | Arbitration and set admission — `compare`, `lease`, `fit` | Composition over 1–5, and it closes the reservation gap 5 opened |
+| 7 | Intake and conversion as admitted jobs, **with the daemon** | Reuses both ledgers for fit; jobs are what finally require continuity |
+| 8 | Hosting screen API | An HTTP surface over 2, 4, 6 and 7 |
+
+**The daemon's slot, decided 2026-09-11.** Slice 3 removed it, and for a good
+reason: per-process attribution needs no continuity, so the estimator shipped
+without one. It returns in slice 7, justified by **jobs** — queued, resumable,
+cancellable, progress-reporting — which nothing in slices 1–6 has and which
+intake cannot be built without. The continuous behaviours that were the
+daemon's original case are then nearly free, and are taken as a dividend rather
+than used as the argument: a standing swap guard over the whole machine rather
+than over harmony's own loads, cross-provider LRU, and one idle policy in place
+of four. Building a daemon for the warden alone would still fail slice 3's bar,
+which was that a missed short-lived state be observed rather than imagined.
 
 ## 10. Open questions
 
@@ -314,12 +349,24 @@ graph moves ahead of the daemon.
    and every cross-format grouping is inferred.
 2. **Does the disk ledger genuinely want the memory ledger's shape?** (§2) The
    unifying claim of the project; currently asserted, not demonstrated.
-3. **Is `DERIVES_FROM` recorded or inferred?** (§3) Riskier now that placement
-   depends on it.
-4. **Does harmony own a canonical store, or place native copies per provider?**
-   [`inventory.md`](inventory.md) §7 Q3, unresolved and now harder: the machine
-   already has `~/.lmstudio/models` symlinking into the llama.cpp pool, so the
-   answer is currently "accidentally, both."
+3. ~~**Is `DERIVES_FROM` recorded or inferred?**~~ (§3) **Answered 2026-09-11:
+   both, split by who made the artifact.** Recorded for anything harmony
+   converts; inferred and marked for anything already on disk. That puts exact
+   lineage precisely where §3 says placement needs it — on derived artifacts —
+   and leaves the guess only where there is nothing better to have. Follows
+   from Q4, and does not loosen slice 2's rule: an inferred edge still may not
+   drive placement or deletion.
+4. ~~**Does harmony own a canonical store, or place native copies per
+   provider?**~~ **Answered 2026-09-11: own what it makes, index what it did
+   not.** Conversions land in a store harmony owns, with recorded lineage and a
+   recorded capability delta. Everything a provider's own downloader put on
+   disk stays indexed in place, including `~/.lmstudio/models` symlinking into
+   the llama.cpp pool. [`inventory.md`](inventory.md) §7 Q3 had already
+   narrowed this by measurement — there is nothing on this machine to
+   deduplicate, so the case for a pool can only be made from owning intake —
+   and this is that case, scoped to intake and no further. Moving the 148 GB
+   the providers manage is not on the table: it is the least reversible act in
+   the project, and every provider's own updater would contest it forever.
 5. **How much of a provider's footprint is not model memory?** Measured
    2026-09-09: LM Studio idles at 592 MB across five Electron processes with
    nothing loaded. The estimator must subtract a baseline it does not yet track.
