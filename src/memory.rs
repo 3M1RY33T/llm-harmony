@@ -15,6 +15,20 @@ pub struct Machine {
 }
 
 impl Machine {
+    /// A reading that admits it is not one.
+    ///
+    /// Used where a machine read failed and a caller must still produce a
+    /// document. Every derived figure comes out zero, which is visibly wrong
+    /// rather than plausibly wrong.
+    pub fn zero() -> Machine {
+        Machine {
+            total_bytes: 0,
+            used_bytes: 0,
+            swap_total_bytes: 0,
+            swap_used_bytes: 0,
+        }
+    }
+
     pub fn read() -> Result<Machine, String> {
         let sys = System::new_with_specifics(
             RefreshKind::nothing().with_memory(MemoryRefreshKind::everything()),

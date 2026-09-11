@@ -60,8 +60,13 @@ pub fn from_artifact(path: &Path) -> Option<ModelShape> {
     if path.is_dir() {
         return from_mlx_config(path);
     }
-    if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("gguf")) {
-        return from_gguf(path);
+    // Sniffed, not guessed from the extension: Ollama stores its weights as
+    // `blobs/sha256-<digest>` with no extension at all, and they are ordinary
+    // GGUFs. Keying on `.gguf` made every Ollama model unpriceable, which
+    // showed up as "only a declared figure is available" on a model harmony
+    // could see perfectly well. Found 2026-09-11.
+    if let Some(shape) = from_gguf(path) {
+        return Some(shape);
     }
     // A shard inside an MLX snapshot: its config is a sibling.
     path.parent().and_then(from_mlx_config)

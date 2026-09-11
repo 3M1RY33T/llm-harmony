@@ -41,7 +41,8 @@ pub struct Estimate {
 }
 
 impl Estimate {
-    fn unknown() -> Estimate {
+    /// Not a number, and not pretending to be one.
+    pub fn unknown() -> Estimate {
         Estimate { bytes: None, basis: Basis::Unknown, samples: 0, spread_bytes: None }
     }
 }

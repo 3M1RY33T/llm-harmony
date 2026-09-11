@@ -27,6 +27,30 @@ Everything the project does — receiving, placing, converting, registering,
 evicting, clearing — is management. A client that wants inference gets an
 address and connects to the provider directly.
 
+### The one exception, and the narrower claim that replaces it
+
+Amended 2026-09-11, in slice 5. Two of the four providers — llama.cpp and
+vLLM-MLX — expose **no control-plane load verb at all**: a model becomes
+resident on its first inference request and no earlier
+([`field-notes.md`](field-notes.md)). So `RESOLVE` returning `ready` for one of
+them can only mean *advertised*, not *resident* — the exact distinction that
+made `/v1/models` unusable as a residency signal — unless harmony triggers that
+first request itself.
+
+It does, bounded as tightly as the idea allows: **one fixed sentinel token**, to
+`/v1/completions`, `max_tokens: 1`, only when the caller asked for residency,
+never carrying anything a user wrote.
+
+The honest claim is therefore not "zero bytes on the request plane" but the one
+that was always load-bearing:
+
+> **No user prompt passes through harmony.** It never proxies, never forwards,
+> never sees a conversation, and never stands between a client and a provider.
+
+The table above still holds for everything else. If this exception ever grows a
+second case, that is the signal the project is becoming a router — and the
+argument in *Why returning coordinates is not routing* stops applying.
+
 ### Why returning coordinates is not routing
 
 [`prior-art.md`](prior-art.md) rejects llama-swap, LiteLLM and LocalAI because

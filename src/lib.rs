@@ -12,6 +12,7 @@ pub mod provider;
 pub mod record;
 pub mod render;
 pub mod resolve;
+pub mod render_actuate;
 pub mod render_estimate;
 pub mod render_ls;
 pub mod render_resolve;

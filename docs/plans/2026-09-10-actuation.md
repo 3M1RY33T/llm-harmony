@@ -1590,6 +1590,12 @@ git commit -m "verify actuation against the machine, and record what it cost"
 - **No Delroy change.** `status` stays `schema: 1` with additive fields; `harmony.py` is untouched by this slice. Teaching Delroy to call `switch` is a separate piece of work with its own decision about whether a turn may ever wait.
 - **No control over JIT loads.** llama.cpp and vLLM-MLX load on first request. Harmony bounds them at install time (`max_instances`, `memory_budget_gb`) and accounts for them after; it cannot stand in front of them, and this slice does not pretend otherwise.
 
+## Follow-ups found while building this
+
+- **Ollama candidates carry no artifact.** `resolve::identity::candidates` returns an Ollama candidate with `artifact: None`, so no shape can be read and every Ollama model prices as a `Declared` floor — which this slice refuses to admit on. The digest → `blobs/sha256-*` link that slice 2's scanner indexes is not reaching the candidate. A resolve-layer gap, not an actuation one, and the reason `llm-harmony load <ollama-model>` currently refuses.
+- **LM Studio's own-managed models are invisible to the disk ledger.** `text-embedding-nomic-embed-text-v1.5` is served by LM Studio and stored outside `~/.lmstudio/models`, so nothing on disk matches it. Same consequence: no shape, no computed figure, refused.
+- **`last_used` is always zero.** No provider publishes a last-use time, so LRU eviction currently degrades to the ledger's own order. Ollama's `/api/ps` carries `expires_at`, which shifts on use and would be a usable proxy.
+
 ## Risks
 
 **The computed basis may over-predict badly enough to be useless.** Hand-computation for the one measured shape suggests ~15 GB predicted against a 9.6 GB observation. Task 4 Step 5 exists to find out why before tuning, and the answer changes what ships: a lazily-allocated or quantised KV cache means the formula needs a per-provider override, not a smaller margin. Shaving the margin to fit one observation is how under-prediction gets shipped, and under-prediction is the one failure that costs the machine.

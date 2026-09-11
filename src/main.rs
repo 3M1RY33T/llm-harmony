@@ -52,6 +52,57 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Make a model resident, evicting unpinned models if that is what it takes.
+    Load {
+        model: String,
+        #[arg(long)]
+        context: Option<u32>,
+        #[arg(long)]
+        provider: Option<String>,
+        /// Protect it from eviction once it is loaded.
+        #[arg(long)]
+        pin: bool,
+        #[arg(long, value_name = "BYTES")]
+        reserve: Option<u64>,
+        /// Override the watchdog's abort threshold. Half the reserve by default.
+        #[arg(long, value_name = "BYTES")]
+        floor: Option<u64>,
+        #[arg(long, value_name = "PATH")]
+        config: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Free a model. Naming it is consent, so a pin does not stop this.
+    Unload {
+        model: String,
+        #[arg(long)]
+        provider: Option<String>,
+        #[arg(long, value_name = "PATH")]
+        config: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Replace one resident model with another, across providers or not.
+    ///
+    /// Always frees the first, even when both would have fitted: `switch`
+    /// means "I am done with this one". `load` is how two models end up
+    /// resident together.
+    Switch {
+        from: String,
+        to: String,
+        #[arg(long)]
+        context: Option<u32>,
+        #[arg(long)]
+        pin: bool,
+        #[arg(long, value_name = "BYTES")]
+        reserve: Option<u64>,
+        #[arg(long, value_name = "BYTES")]
+        floor: Option<u64>,
+        #[arg(long, value_name = "PATH")]
+        config: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
     /// Protect a model from being evicted to make room for another.
     ///
     /// Works whether or not it is resident, and the pin is sticky: it survives
@@ -176,6 +227,80 @@ fn pin_targets(
         .collect())
 }
 
+/// Config and machine, the two things every actuating verb needs and the only
+/// two whose failure is fatal before anything is touched.
+fn setup(config: Option<&std::path::Path>) -> Result<(Config, Machine), String> {
+    Ok((Config::load(config)?, Machine::read()?))
+}
+
+/// Print a report and turn it into an exit code.
+///
+/// Anything that is not `Ready` exits non-zero: a caller must be able to tell
+/// "the model is there" from "the model is not there" without parsing prose.
+fn emit(report: &llm_harmony::actuate::run::Report, json: bool) -> ExitCode {
+    if json {
+        println!("{}", serde_json::to_string_pretty(report).unwrap());
+    } else {
+        print!("{}", llm_harmony::render_actuate::render(report));
+    }
+    if report.is_success() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
+/// `load` and `switch`: the same machinery, differing only in whether a model
+/// is freed first.
+#[allow(clippy::too_many_arguments)]
+fn actuate(
+    verb: &'static str,
+    request: llm_harmony::actuate::plan::Request,
+    provider: Option<String>,
+    pin: bool,
+    reserve: Option<u64>,
+    floor: Option<u64>,
+    config_path: Option<&std::path::Path>,
+    json: bool,
+) -> ExitCode {
+    if let Some(p) = &provider {
+        if let Err(e) = p.parse::<llm_harmony::provider::ProviderKind>() {
+            eprintln!("llm-harmony: {e}");
+            return ExitCode::FAILURE;
+        }
+    }
+    let (config, machine) = match setup(config_path) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("llm-harmony: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    // Generous: a load is slow, and the read timeouts that protect `status`
+    // would abandon a perfectly healthy one.
+    let http = Http::new(Duration::from_secs(30));
+    let options = llm_harmony::actuate::run::Options {
+        reserve_bytes: reserve.unwrap_or(llm_harmony::render_estimate::DEFAULT_RESERVE_BYTES),
+        floor_bytes: floor,
+        pin_after: pin,
+        ..Default::default()
+    };
+
+    let corpus = llm_harmony::estimate::corpus::load_default();
+    let inventory = llm_harmony::inventory::Inventory::scan_offline(None);
+    let model = request.model.clone();
+    let context = request.context_tokens;
+    let estimate = |ledger: &Ledger, candidates: &[llm_harmony::resolve::identity::Candidate]| {
+        estimate_for(&config, ledger, &inventory, candidates, &model, context, &corpus)
+    };
+
+    let report = llm_harmony::actuate::run::load_or_switch(
+        verb, &config, &http, machine, &request, &estimate, &options,
+    );
+    emit(&report, json)
+}
+
 /// What a model costs, by the ladder in `design.md` section 5: measured, then
 /// computed, then a declared floor.
 ///
@@ -218,8 +343,17 @@ fn estimate_for(
         .iter()
         .find_map(|c| {
             let id = c.artifact.as_ref()?;
-            let a = inventory.weights_artifact(id)?;
-            let shape = llm_harmony::estimate::shape::from_artifact(&a.path)?;
+            // The artifact the provider named, if it is itself a model file --
+            // Ollama's extensionless blobs are, and no format table would say
+            // so. Only when it is not do we go looking for the weights beside
+            // it, which is the LM Studio `config.json` case.
+            let given = inventory.artifacts.iter().find(|a| &a.id == id);
+            let shape = given
+                .and_then(|a| llm_harmony::estimate::shape::from_artifact(&a.path))
+                .or_else(|| {
+                    let a = inventory.weights_artifact(id)?;
+                    llm_harmony::estimate::shape::from_artifact(&a.path)
+                })?;
             let window = context.or(shape.trained_context)?;
             // f16 unless this provider declared a quantised cache.
             let kv_dtype = config
@@ -295,6 +429,44 @@ fn main() -> ExitCode {
                 print!("{}", render_table(&ledger, &pins));
             }
             ExitCode::SUCCESS
+        }
+        Command::Load { model, context, provider, pin, reserve, floor, config, json } => {
+            let request = llm_harmony::actuate::plan::Request {
+                model,
+                context_tokens: context,
+                free_first: None,
+            };
+            actuate("load", request, provider, pin, reserve, floor, config.as_deref(), json)
+        }
+        Command::Switch { from, to, context, pin, reserve, floor, config, json } => {
+            let request = llm_harmony::actuate::plan::Request {
+                model: to,
+                context_tokens: context,
+                free_first: Some(from),
+            };
+            actuate("switch", request, None, pin, reserve, floor, config.as_deref(), json)
+        }
+        Command::Unload { model, provider, config, json } => {
+            let kind = match provider.as_deref().map(str::parse::<llm_harmony::provider::ProviderKind>) {
+                Some(Ok(k)) => Some(k),
+                Some(Err(e)) => {
+                    eprintln!("llm-harmony: {e}");
+                    return ExitCode::FAILURE;
+                }
+                None => None,
+            };
+            let (cfg, machine) = match setup(config.as_deref()) {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("llm-harmony: {e}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            let http = Http::new(Duration::from_secs(30));
+            let options = llm_harmony::actuate::run::Options::default();
+            let report =
+                llm_harmony::actuate::run::unload(&cfg, &http, machine, &model, kind, &options);
+            emit(&report, json)
         }
         Command::Pin { model, provider, note } => {
             let targets = match pin_targets(&model, provider.as_deref()) {
