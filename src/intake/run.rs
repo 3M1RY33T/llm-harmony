@@ -196,6 +196,71 @@ pub fn best_build(repo: &hf::Repo) -> Option<Build> {
         .min_by_key(|b| b.bytes.unwrap_or(u64::MAX))
 }
 
+/// Where one provider would put a build, or why it would not take it.
+#[derive(Debug, Clone)]
+pub struct Placement {
+    pub store: Store,
+    /// The directory the files land in. `None` for a provider that takes no
+    /// file drop and pulls for itself.
+    pub target_dir: Option<std::path::PathBuf>,
+    /// The filesystem to price the download against. Always a real path, even
+    /// when nothing is placed there by us.
+    pub filesystem: std::path::PathBuf,
+    /// What the provider must be asked to pull, for the transport that is not
+    /// a file drop.
+    pub registry_name: Option<String>,
+}
+
+/// **Two transports, one admission**, and the one place that decides which.
+///
+/// Ollama's store is a digest-keyed blob database written by its own `pull`,
+/// so there is no directory to place into — but that is a fact about how bytes
+/// move, not about whether the provider can serve the model, and
+/// `intake::ollama` bridges the repo id exactly rather than guessing at a name
+/// in Ollama's library.
+///
+/// Lifted out of `plan_add` 2026-09-11 so `destinations` can ask the same
+/// question of every provider without a second copy of the rule. A picker
+/// built from a second copy would offer a provider the pull then refused,
+/// which is the whole failure that verb exists to prevent.
+pub fn placement(
+    provider: ProviderKind,
+    repo_id: &str,
+    build: &Build,
+) -> Result<Placement, String> {
+    if provider == ProviderKind::Ollama {
+        let registry_name = crate::intake::ollama::transport_for(repo_id, build)?;
+        // Ollama writes where Ollama writes; the store root is only used to
+        // price the pull against the right filesystem.
+        let Some(root) = place::directory_for(Store::Ollama, "") else {
+            return Err("ollama's store is not present on this machine".to_string());
+        };
+        return Ok(Placement {
+            store: Store::Ollama,
+            target_dir: None,
+            filesystem: root,
+            registry_name: Some(registry_name),
+        });
+    }
+    let first = &build.files[0];
+    let Some(store) = place::store_for(provider, first.format) else {
+        return Err(format!(
+            "{} cannot serve a {:?} file from a directory",
+            provider.as_str(),
+            first.format
+        ));
+    };
+    let Some(dir) = place::directory_for(store, repo_id) else {
+        return Err(format!("{}'s store is not present on this machine", store.as_str()));
+    };
+    Ok(Placement {
+        store,
+        target_dir: Some(dir.clone()),
+        filesystem: dir,
+        registry_name: None,
+    })
+}
+
 /// What a repo's build would cost resident, before it exists here.
 ///
 /// **Always `Declared`**, and that is not a shortcut. The estimate ladder's
@@ -363,52 +428,18 @@ pub fn plan_add(
     doc.file = build.label();
     doc.files = build.files.iter().map(|f| f.name.clone()).collect();
     doc.bytes = build.bytes;
-    let first = &build.files[0];
 
-    // Two transports, one admission. Ollama's store is a digest-keyed blob
-    // database written by its own `pull`, so there is no directory to place
-    // into — but that is a fact about how bytes move, not about whether the
-    // provider can serve the model, and `intake::ollama` bridges the repo id
-    // exactly rather than guessing at a name in Ollama's library.
-    let dir: std::path::PathBuf = if provider == ProviderKind::Ollama {
-        match crate::intake::ollama::transport_for(repo_id, &build) {
-            Ok(name) => doc.registry_name = Some(name),
-            Err(reason) => {
-                doc.outcome = AddOutcome::Refused { reason };
-                return doc;
-            }
+    let dir: std::path::PathBuf = match placement(provider, repo_id, &build) {
+        Ok(p) => {
+            doc.store = Some(p.store.as_str().to_string());
+            doc.registry_name = p.registry_name;
+            doc.target_dir = p.target_dir.as_ref().map(|d| d.display().to_string());
+            p.filesystem
         }
-        doc.store = Some(Store::Ollama.as_str().to_string());
-        // Ollama writes where Ollama writes; the store root is only used to
-        // price the pull against the right filesystem.
-        let Some(root) = place::directory_for(Store::Ollama, "") else {
-            doc.outcome = AddOutcome::Refused {
-                reason: "ollama's store is not present on this machine".to_string(),
-            };
+        Err(reason) => {
+            doc.outcome = AddOutcome::Refused { reason };
             return doc;
-        };
-        root
-    } else {
-        let Some(store) = place::store_for(provider, first.format) else {
-            doc.outcome = AddOutcome::Refused {
-                reason: format!(
-                    "{} cannot serve a {:?} file from a directory",
-                    provider.as_str(),
-                    first.format
-                ),
-            };
-            return doc;
-        };
-        doc.store = Some(store.as_str().to_string());
-
-        let Some(dir) = place::directory_for(store, repo_id) else {
-            doc.outcome = AddOutcome::Refused {
-                reason: format!("{}'s store is not present on this machine", store.as_str()),
-            };
-            return doc;
-        };
-        doc.target_dir = Some(dir.display().to_string());
-        dir
+        }
     };
 
     let fit = price_build(machine, &build, Some(&dir));

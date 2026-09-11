@@ -1,4 +1,5 @@
 pub mod convert;
+pub mod destinations;
 pub mod download;
 pub mod fit;
 pub mod hf;

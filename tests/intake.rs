@@ -518,3 +518,39 @@ fn a_declaration_the_repo_name_does_not_descend_from_is_still_a_warning() {
 fn a_repo_declaring_nothing_is_still_a_warning() {
     assert!(llm_harmony::intake::provenance::check_repo(None, "x/y-GGUF").is_warning());
 }
+
+
+// --- destinations: not every provider reads every format --------------------
+
+/// The rule this verb exists for. A GGUF can land in LM Studio, Ollama or
+/// llama.cpp and not in vLLM; an MLX build can land in LM Studio or vLLM and
+/// not in llama.cpp or Ollama. Until 2026-09-11 nothing said so before a pull
+/// was attempted, so a destination picker listing every provider on the
+/// machine produced a refusal *after* the click.
+#[test]
+fn every_provider_is_answered_for_and_the_blocked_ones_carry_a_reason() {
+    use llm_harmony::intake::run;
+    use llm_harmony::inventory::artifact::Format;
+    use llm_harmony::provider::ProviderKind;
+
+    let repo = llm_harmony::intake::hf::repo_from_json(&serde_json::json!({
+        "id": "unsloth/M-GGUF",
+        "siblings": [{"rfilename": "M.Q4_K_M.gguf", "size": 4_000_000_000u64}],
+    }))
+    .unwrap();
+    let build = run::best_build(&repo).expect("a gguf build");
+    assert_eq!(build.files[0].format, Format::Gguf);
+
+    // vLLM serves MLX here, so it cannot take a GGUF from a directory — and
+    // says which of the two facts is the problem.
+    let err = run::placement(ProviderKind::Vllm, "unsloth/M-GGUF", &build)
+        .expect_err("vllm does not read gguf");
+    assert!(err.contains("Gguf"), "{err}");
+
+    // And the answer is `placement`'s, not a second table: `plan_add` decides
+    // where bytes go with this same function, so a picker built on it can
+    // never offer a provider the pull then refuses.
+    let ok = run::placement(ProviderKind::LmStudio, "unsloth/M-GGUF", &build);
+    assert!(ok.is_ok() || format!("{ok:?}").contains("not present on this machine"),
+            "either it places, or the store is absent -- never a format refusal: {ok:?}");
+}

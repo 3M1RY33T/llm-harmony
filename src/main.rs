@@ -331,6 +331,19 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Which providers could take a repo's build, and where each would put it.
+    ///
+    /// Asked before a pull rather than discovered by attempting one: not every
+    /// provider reads every format, and a picker whose options are not all
+    /// valid is a guess with a menu.
+    Destinations {
+        hf_id: String,
+        /// A specific build. The smallest loadable one otherwise.
+        #[arg(long)]
+        file: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
     /// Print a removal plan. Never executes.
     Rm {
         model: String,
@@ -1721,6 +1734,38 @@ fn main() -> ExitCode {
                     ExitCode::FAILURE
                 }
             }
+        }
+        Command::Destinations { hf_id, file, json } => {
+            let config = Config::load(None).unwrap_or_else(|_| Config::defaults());
+            // Every configured provider, reachable or not. A pull places bytes
+            // a stopped provider reads on its next start, so being down is
+            // worth saying and not worth refusing over.
+            let kinds: Vec<llm_harmony::provider::ProviderKind> =
+                config.providers.iter().map(|p| p.kind).collect();
+            let http = Http::new(Duration::from_secs(20));
+            let machine = Machine::read().unwrap_or_else(|_| Machine::zero());
+            let doc = llm_harmony::intake::destinations::for_repo(
+                &http, &machine, &hf_id, &kinds, file.as_deref(),
+            );
+            if json {
+                println!("{}", serde_json::to_string_pretty(&doc).unwrap());
+            } else if let Some(reason) = &doc.refusal {
+                eprintln!("llm-harmony: {reason}");
+                return ExitCode::FAILURE;
+            } else {
+                println!("  {} — {}", doc.file, llm_harmony::render::human_bytes(doc.bytes.unwrap_or(0)));
+                for d in &doc.destinations {
+                    if d.ok {
+                        println!("  {:<10} {}", d.provider,
+                                 d.target_dir.clone()
+                                     .or_else(|| d.registry_name.clone())
+                                     .unwrap_or_default());
+                    } else {
+                        println!("  {:<10} — {}", d.provider, d.reason);
+                    }
+                }
+            }
+            ExitCode::SUCCESS
         }
         Command::Siblings { hf_id, provider, limit, json } => {
             let kind = match provider.as_deref().map(str::parse::<llm_harmony::provider::ProviderKind>) {
