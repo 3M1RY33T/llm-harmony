@@ -12,3 +12,4 @@
 
 pub mod lock;
 pub mod plan;
+pub mod watchdog;
