@@ -22,7 +22,7 @@ fn opt(v: Option<u64>) -> String {
     v.map(human_bytes).unwrap_or_else(|| "?".to_string())
 }
 
-pub fn render_table(ledger: &Ledger) -> String {
+pub fn render_table(ledger: &Ledger, pins: &crate::pins::Pins) -> String {
     let mut out = String::new();
     out.push_str(&format!(
         "{:<10} {:>7} {:>11} {:>9} {:>8}\n",
@@ -69,11 +69,47 @@ pub fn render_table(ledger: &Ledger) -> String {
         human_bytes(m.swap_used_bytes),
     ));
 
+    // Only when something is protected. A pin is the reason an admission can
+    // be refused on a machine that looks half empty, so it has to be visible
+    // here rather than only in the refusal that mentions it.
+    if !pins.all().is_empty() {
+        let held: Vec<String> = pins
+            .all()
+            .iter()
+            .map(|p| format!("{} on {}", p.model, p.provider.as_str()))
+            .collect();
+        out.push_str(&format!("{:<10} {}\n", "pinned", held.join(" \u{b7} ")));
+    }
+
     out
 }
 
-pub fn render_json(ledger: &Ledger) -> String {
-    serde_json::to_string_pretty(ledger).expect("ledger is serialisable")
+pub fn render_json(ledger: &Ledger, pins: &crate::pins::Pins) -> String {
+    // `pinned` is added per model rather than as a separate list, so a
+    // consumer reading a row never has to join two collections to know whether
+    // it may be evicted. Additive: the document stays schema 1, which is what
+    // Delroy's harmony.py checks before it will read anything at all.
+    let mut doc = serde_json::to_value(ledger).expect("ledger is serialisable");
+    if let Some(rows) = doc.get_mut("rows").and_then(|r| r.as_array_mut()) {
+        for row in rows.iter_mut() {
+            let kind = row.get("kind").and_then(|k| k.as_str()).unwrap_or("").to_string();
+            let Ok(kind) = kind.parse::<crate::provider::ProviderKind>() else { continue };
+            let Some(models) = row
+                .get_mut("outcome")
+                .and_then(|o| o.get_mut("detail"))
+                .and_then(|d| d.as_array_mut())
+            else {
+                continue;
+            };
+            for model in models.iter_mut() {
+                let id = model.get("id").and_then(|i| i.as_str()).unwrap_or("").to_string();
+                if let Some(obj) = model.as_object_mut() {
+                    obj.insert("pinned".into(), pins.is_pinned(kind, &id).into());
+                }
+            }
+        }
+    }
+    serde_json::to_string_pretty(&doc).expect("a document built from one")
 }
 
 /// What each provider can actually do, for `llm-harmony verify`.
@@ -174,7 +210,7 @@ mod tests {
 
     #[test]
     fn a_down_provider_says_not_running_and_shows_no_numbers() {
-        let out = render_table(&ledger());
+        let out = render_table(&ledger(), &crate::pins::Pins::empty());
         let line = out.lines().find(|l| l.contains("llamacpp")).unwrap();
         assert!(line.contains("not running"), "got: {line}");
         assert!(!line.contains('G'), "a down provider must not show a size: {line}");
@@ -182,7 +218,7 @@ mod tests {
 
     #[test]
     fn a_provider_without_published_weights_shows_a_question_mark() {
-        let out = render_table(&ledger());
+        let out = render_table(&ledger(), &crate::pins::Pins::empty());
         let line = out.lines().find(|l| l.contains("lmstudio")).unwrap();
         assert!(line.contains("9.1G"), "footprint is always known: {line}");
         assert!(line.contains('?'), "weights are unknown for LM Studio: {line}");
@@ -190,7 +226,7 @@ mod tests {
 
     #[test]
     fn a_provider_with_weights_shows_the_gap() {
-        let out = render_table(&ledger());
+        let out = render_table(&ledger(), &crate::pins::Pins::empty());
         let line = out.lines().find(|l| l.contains("ollama")).unwrap();
         assert!(line.contains("261.6M"), "weights: {line}");
         assert!(line.contains("+119.9M"), "gap is footprint minus weights, signed: {line}");
@@ -198,14 +234,14 @@ mod tests {
 
     #[test]
     fn the_machine_line_names_swap() {
-        let out = render_table(&ledger());
+        let out = render_table(&ledger(), &crate::pins::Pins::empty());
         assert!(out.contains("24.0G total"), "{out}");
         assert!(out.contains("swap"), "{out}");
     }
 
     #[test]
     fn json_is_valid_and_carries_errors() {
-        let json = render_json(&ledger());
+        let json = render_json(&ledger(), &crate::pins::Pins::empty());
         let v: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
         assert_eq!(v["rows"].as_array().unwrap().len(), 3);
         assert_eq!(v["schema"], 1, "consumers must be able to detect a shape change");
@@ -230,5 +266,56 @@ mod tests {
         assert!(out.contains("lmstudio"), "{out}");
         assert!(out.contains("model-level"), "{out}");
         assert!(out.contains("self-managed (max_instances)"), "a bare 'self-managed' tells the operator nothing actionable: {out}");
+    }
+
+    fn pinned(model: &str) -> crate::pins::Pins {
+        let mut p = crate::pins::Pins::empty();
+        p.add(crate::pins::Pin {
+            provider: ProviderKind::LmStudio,
+            model: model.into(),
+            at: 0,
+            note: None,
+        });
+        p
+    }
+
+    /// A pin is why an admission can be refused on a machine that looks half
+    /// empty, so `status` has to show it without being asked.
+    #[test]
+    fn the_table_names_what_is_pinned() {
+        let out = render_table(&ledger(), &pinned("qwen3-14b"));
+        let line = out.lines().find(|l| l.starts_with("pinned")).expect("a pins line: {out}");
+        assert!(line.contains("qwen3-14b on lmstudio"), "{line}");
+    }
+
+    /// And says nothing at all when nothing is protected -- a permanent empty
+    /// row would train the eye to skip it.
+    #[test]
+    fn the_table_is_silent_when_nothing_is_pinned() {
+        let out = render_table(&ledger(), &crate::pins::Pins::empty());
+        assert!(!out.contains("pinned"), "{out}");
+    }
+
+    /// Per model, not as a separate list: a consumer reading a row must not
+    /// have to join two collections to know whether it may be evicted.
+    #[test]
+    fn json_marks_the_pinned_model_and_only_that_one() {
+        let json = render_json(&ledger(), &pinned("qwen3-14b"));
+        let v: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+        assert_eq!(v["schema"], 1, "pins are additive; the schema must not move");
+        assert_eq!(v["rows"][0]["outcome"]["detail"][0]["id"], "qwen3-14b");
+        assert_eq!(v["rows"][0]["outcome"]["detail"][0]["pinned"], true);
+        assert_eq!(
+            v["rows"][1]["outcome"]["detail"][0]["pinned"], false,
+            "the same pin must not protect another provider's model"
+        );
+    }
+
+    /// A failed row has no models to mark, and must survive the pass anyway.
+    #[test]
+    fn json_leaves_a_failed_row_untouched() {
+        let json = render_json(&ledger(), &pinned("qwen3-14b"));
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["rows"][2]["outcome"]["status"], "failed");
     }
 }

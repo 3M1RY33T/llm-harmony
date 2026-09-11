@@ -6,6 +6,7 @@ pub mod inventory;
 pub mod launch;
 pub mod ledger;
 pub mod memory;
+pub mod pins;
 pub mod provider;
 pub mod record;
 pub mod render;

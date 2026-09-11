@@ -52,6 +52,26 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Protect a model from being evicted to make room for another.
+    ///
+    /// Works whether or not it is resident, and the pin is sticky: it survives
+    /// an unload, so the next load is protected too. Cleared only by `unpin`.
+    Pin {
+        model: String,
+        /// Pin this provider's spelling only. Without it, every provider that
+        /// could serve the model is pinned.
+        #[arg(long)]
+        provider: Option<String>,
+        /// Why, for whoever reads `status` in a fortnight.
+        #[arg(long)]
+        note: Option<String>,
+    },
+    /// Remove that protection.
+    Unpin {
+        model: String,
+        #[arg(long)]
+        provider: Option<String>,
+    },
     /// What each provider can actually do, probed rather than assumed.
     Verify {
         #[arg(long)]
@@ -120,6 +140,42 @@ fn provider_config(
         .ok_or_else(|| format!("`{name}` is not in your config"))
 }
 
+/// Which (provider, model-id) pairs a `pin`/`unpin` names.
+///
+/// With `--provider` the model string is taken as that provider's own id and
+/// used verbatim. Without it the name is resolved the way `resolve` resolves
+/// it -- by artifact identity -- and every provider that could serve it is
+/// pinned, because "protect this model" means the model, not one server's
+/// spelling of it.
+fn pin_targets(
+    model: &str,
+    provider: Option<&str>,
+) -> Result<Vec<(llm_harmony::provider::ProviderKind, String)>, String> {
+    if let Some(name) = provider {
+        let kind: llm_harmony::provider::ProviderKind = name.parse()?;
+        return Ok(vec![(kind, model.to_string())]);
+    }
+
+    let config = Config::load(None)?;
+    let machine = Machine::read()?;
+    let http = Http::new(Duration::from_millis(1500));
+    let ledger = Ledger::assemble(&config, &http, machine);
+    let inventory = llm_harmony::inventory::Inventory::scan_offline(None);
+    let candidates = llm_harmony::resolve::identity::candidates(&ledger, &inventory, model);
+
+    if candidates.is_empty() {
+        // Refusing beats pinning nothing: a pin on a name no provider serves
+        // is a silent no-op waiting to surprise whoever set it.
+        return Err(format!(
+            "no provider serves `{model}`; name one with --provider to pin it anyway"
+        ));
+    }
+    Ok(candidates
+        .into_iter()
+        .map(|c| (c.provider, c.provider_model_id))
+        .collect())
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
@@ -143,6 +199,7 @@ fn main() -> ExitCode {
 
             let http = Http::new(Duration::from_millis(timeout_ms));
             let ledger = Ledger::assemble(&config, &http, machine);
+            let pins = llm_harmony::pins::Pins::load();
 
             if record {
                 // Recording must never fail the command: it is data
@@ -165,9 +222,67 @@ fn main() -> ExitCode {
             }
 
             if json {
-                println!("{}", render_json(&ledger));
+                println!("{}", render_json(&ledger, &pins));
             } else {
-                print!("{}", render_table(&ledger));
+                print!("{}", render_table(&ledger, &pins));
+            }
+            ExitCode::SUCCESS
+        }
+        Command::Pin { model, provider, note } => {
+            let targets = match pin_targets(&model, provider.as_deref()) {
+                Ok(t) => t,
+                Err(e) => {
+                    eprintln!("llm-harmony: {e}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            let mut pins = llm_harmony::pins::Pins::load();
+            let at = llm_harmony::record::now_unix();
+            let mut added = 0;
+            for (kind, id) in &targets {
+                if pins.add(llm_harmony::pins::Pin {
+                    provider: *kind,
+                    model: id.clone(),
+                    at,
+                    note: note.clone(),
+                }) {
+                    println!("pinned {id} on {}", kind.as_str());
+                    added += 1;
+                } else {
+                    println!("{id} on {} was already pinned", kind.as_str());
+                }
+            }
+            if added > 0 {
+                if let Err(e) = pins.save() {
+                    eprintln!("llm-harmony: could not save pins: {e}");
+                    return ExitCode::FAILURE;
+                }
+            }
+            ExitCode::SUCCESS
+        }
+        Command::Unpin { model, provider } => {
+            let targets = match pin_targets(&model, provider.as_deref()) {
+                Ok(t) => t,
+                Err(e) => {
+                    eprintln!("llm-harmony: {e}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            let mut pins = llm_harmony::pins::Pins::load();
+            let mut removed = 0;
+            for (kind, id) in &targets {
+                if pins.remove(*kind, id) {
+                    println!("unpinned {id} on {}", kind.as_str());
+                    removed += 1;
+                }
+            }
+            if removed == 0 {
+                println!("nothing was pinned for `{model}`");
+                return ExitCode::SUCCESS;
+            }
+            if let Err(e) = pins.save() {
+                eprintln!("llm-harmony: could not save pins: {e}");
+                return ExitCode::FAILURE;
             }
             ExitCode::SUCCESS
         }
