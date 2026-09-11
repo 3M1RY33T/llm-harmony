@@ -41,6 +41,11 @@ enum Command {
         /// Also poll providers, so resident models become removal blockers.
         #[arg(long)]
         live: bool,
+        /// Report separate allocations holding the same bytes instead of the
+        /// per-model table. Two paths that share an allocation are not
+        /// duplicates and never appear here.
+        #[arg(long)]
+        duplicates: bool,
     },
     /// Where should a request for this model go?
     Resolve {
@@ -612,8 +617,30 @@ fn main() -> ExitCode {
             }
             ExitCode::SUCCESS
         }
-        Command::Ls { json, live } => {
+        Command::Ls { json, live, duplicates } => {
             let inv = inventory(live);
+            if duplicates {
+                let groups = llm_harmony::inventory::dupes::duplicates(&inv);
+                if json {
+                    let doc = serde_json::json!({
+                        "schema": llm_harmony::ledger::SCHEMA,
+                        "min_bytes": llm_harmony::inventory::dupes::MIN_BYTES,
+                        "reclaimable_bytes":
+                            llm_harmony::inventory::dupes::reclaimable_bytes(&groups),
+                        "groups": groups,
+                    });
+                    println!("{}", serde_json::to_string_pretty(&doc).unwrap());
+                } else {
+                    print!(
+                        "{}",
+                        llm_harmony::render_ls::render_duplicates(
+                            &groups,
+                            llm_harmony::inventory::dupes::MIN_BYTES
+                        )
+                    );
+                }
+                return ExitCode::SUCCESS;
+            }
             if json {
                 let doc = serde_json::json!({
                     "schema": llm_harmony::ledger::SCHEMA,

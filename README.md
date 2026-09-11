@@ -26,10 +26,13 @@ claim of the project.
 > leaking its raw token stream. Same word, different thing: that Harmony is a
 > wire format a model emits; this one decides what fits.
 
-**Status: slices 1–5 implemented**, 249 tests. `status` reads all four
+**Status: slices 1–5 implemented**, 281 tests. `status` reads all four
 providers, `ls` and `rm --dry-run` cover 146 GB across five stores, `estimate`
 predicts a model's footprint, `resolve` answers for a *model* rather than a
-provider, and `start` brings a provider up under launchd.
+provider, and `start` brings a provider up under launchd. `clean --redundant`
+asks `rm`'s question of every model at once — 19 GB of superseded builds here
+— and `ls --duplicates` looks for the same bytes stored twice, of which this
+machine has none.
 
 Slice 5 made it act: `load`, `unload` and `switch` change what is resident,
 admitted against the machine and supervised while they happen, with `pin` to

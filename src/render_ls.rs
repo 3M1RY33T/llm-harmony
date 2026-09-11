@@ -202,3 +202,43 @@ pub fn render_clean(plan: &crate::inventory::clean::CleanPlan) -> String {
     out.push_str("dry run \u{2014} llm-harmony cannot delete\n");
     out
 }
+
+pub fn render_duplicates(groups: &[crate::inventory::dupes::DuplicateGroup], min_bytes: u64) -> String {
+    use crate::inventory::dupes::reclaimable_bytes;
+
+    let mut out = String::new();
+    if groups.is_empty() {
+        out.push_str(&format!(
+            "no duplicate allocations above {}: every copy on this disk is its own bytes\n",
+            human_bytes(min_bytes)
+        ));
+        return out;
+    }
+
+    out.push_str("duplicate allocations:\n\n");
+    for g in groups {
+        out.push_str(&format!(
+            "  {:>9}  x{}  reclaimable {}\n",
+            human_bytes(g.bytes),
+            g.members.len(),
+            human_bytes(g.reclaimable_bytes)
+        ));
+        for m in &g.members {
+            out.push_str(&format!("      {:<10} {}\n", m.store.as_str(), m.path));
+        }
+        out.push_str(&format!("      matched on {}\n\n", g.basis));
+    }
+
+    out.push_str(&"\u{2500}".repeat(80));
+    out.push('\n');
+    out.push_str(&format!(
+        "reclaimable {} across {} group(s)\n",
+        human_bytes(reclaimable_bytes(groups)),
+        groups.len()
+    ));
+    out.push_str(&format!(
+        "report only \u{2014} copies below {} are not compared, and replacing one with a link is not something this slice does\n",
+        human_bytes(min_bytes)
+    ));
+    out
+}

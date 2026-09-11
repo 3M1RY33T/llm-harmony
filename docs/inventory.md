@@ -101,6 +101,50 @@ That last category is not hypothetical. One 9B source held 15 MTP tensors that
 inventory that reasoned purely about "same model, smaller file" would have
 happily deleted the one artifact carrying a capability.
 
+### `clean --redundant` — the same question, asked of everything
+
+`rm` names one model. `clean --redundant` classifies every model and plans the
+builds a better one supersedes, keeping the best of each format. Only
+`Redundant` is selected: `Reproducible` is a *priced* deletion and belongs to a
+person, not to a sweep.
+
+One difference from `rm` is load-bearing. A refusal poisons **that model's**
+plan and nothing else — a served model must not hold the other forty hostage —
+so `clean` builds one plan per identity group and reports the poisoned ones as
+skipped.
+
+Measured here 2026-09-11: 19 GB of superseded builds across three models. One
+is the cross-store case from §2 — LM Studio's Q4 with the llama.cpp pool
+symlink pointing into it, the alias ordered first and priced at zero, exactly
+as this section requires.
+
+**The report is not the whole risk.** Cleaning that Q4 leaves llama.cpp's Q8_0
+as the model's only build, and it is 14.6 GiB where the Q4 was 8.4 GiB — a disk
+clean that raises a model's memory floor by ~6 GB on a 24 GB machine. Whether
+the disk ledger may do that to the memory ledger is open; §7 Q5.
+
+### `ls --duplicates` — the same bytes, stored twice
+
+`FileKey` collapses two paths that share an allocation, so the ledger never
+double-counts a symlink. It says nothing about two *separate* copies, which is
+the failure a store-per-provider layout invites: pull one repo into LM Studio
+and llama.cpp independently and the disk pays twice with nothing aliased.
+
+Candidates are same-size allocations above 64 MB; each is then compared on its
+first and last 4 MB. The floor is the only other filter, and that is
+deliberate — an HF blob is named by its sha256 with no extension, so filtering
+on `Format` first hid the entire 69 GB cache, the store most likely to hold two
+revisions of one repo.
+
+Sampling is not proof, and the report says which basis it used rather than the
+word *identical*. It also never proposes an action: replacing a copy with a
+symlink is a write, and this slice has none.
+
+Measured here 2026-09-11: **none**. 37 candidate allocations above 64 MB, five
+same-size groups, and all five different models once sampled — two MLX
+conversions of sibling 9B models quantise to byte-identical *sizes*. Equal size
+is a candidate and never an answer.
+
 ## 5. Safe addition
 
 `llm-harmony add <hf-id>` is the pipeline this session ran by hand, five times:
@@ -177,7 +221,19 @@ Two consequences worth encoding rather than rediscovering:
    friction on the common, harmless case.
 3. **Should it manage the stores, or only report on them?** Moving models to one
    pool would deduplicate, but it means owning layout — and every provider is
-   currently happy pointing wherever the user likes.
+   currently happy pointing wherever the user likes. **Narrowed 2026-09-11:**
+   `ls --duplicates` measured what a pool would deduplicate here, and the
+   answer is nothing — 146 GB, zero duplicate allocations, because the
+   cross-store sharing on this machine is already done with symlinks. The case
+   for a pool cannot be made from deduplication; it would have to be made from
+   owning intake, where placement is harmony's anyway.
 4. **Does capability-loss detection generalise?** MTP and vision tower were
    caught by diffing tensor names. Whether that finds the next kind of loss, or
    only the two already known, is untested.
+5. **May a disk clean raise a model's memory floor?** Opened 2026-09-11 by
+   `clean --redundant`, which is right that a Q8_0 is the better artifact and
+   silent that it costs ~6 GB more to load than the Q4 it supersedes. Three
+   shapes: note it in the report, refuse without an explicit override, or
+   admit the survivor against the memory ledger the way slice 5 admits a job
+   against both. The third is the one that fits the two-ledger claim, and it is
+   the most work.

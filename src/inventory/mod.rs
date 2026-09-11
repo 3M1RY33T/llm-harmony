@@ -1,5 +1,6 @@
 pub mod artifact;
 pub mod clean;
+pub mod dupes;
 pub mod graph;
 pub mod identity;
 pub mod plan;
