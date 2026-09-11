@@ -57,3 +57,4 @@ pub mod fixtures {
         base("unused", 0, 0, true, vec![sample(647, 600_000_000)])
     }
 }
+pub mod shape;

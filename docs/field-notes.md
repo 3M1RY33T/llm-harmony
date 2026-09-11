@@ -129,6 +129,44 @@ can account for but never act on"* — so the design survived; the table did not
 server, not by its presence in a README. `llm-harmony verify` prints the probed
 answer so this table never has to be trusted from memory again.
 
+### A GGUF metadata block is megabytes, and the tokenizer is nearly all of it
+
+Measured 2026-09-11 while building the shape reader, on
+`Qwen3-14B-Claude-4.5-Opus-Distill-Q8_0.gguf`:
+
+| | |
+|---|---|
+| metadata block ends at | **5,934,129 bytes** (5.9 MB) |
+| `tokenizer.ggml.tokens` | 2,588,293 bytes |
+| `tokenizer.ggml.merges` | 2,731,593 bytes |
+| `tokenizer.ggml.token_type` | 607,793 bytes |
+| everything else, 33 pairs | ~6 KB |
+
+The six hyperparameters an estimator needs are in that last 6 KB, and they are
+written **before** the tokenizer. So the cheap read is not "a bounded prefix"
+but "stop at the first `tokenizer.` key" — with an escalating read behind it
+for any writer that orders them differently.
+
+The first version of the reader took a flat 1 MiB prefix. It passed every
+synthetic fixture and returned `None` for **every real model on this machine**,
+because 1 MiB lands in the middle of the token list. Same shape as the adapter
+failures above, in a new place: *the fixture was the hypothesis.*
+
+**Also:** `DirEntry::metadata()` does not follow symlinks, and every weight file
+in the Hugging Face cache is a symlink into `blobs/`. Sizing an MLX snapshot
+that way reported a 4.6 GB model as 0 bytes. `std::fs::metadata(entry.path())`
+is the one that follows.
+
+Verified against four real artifacts once fixed — geometry cross-checks against
+the numbers already in this document:
+
+```
+lmstudio  Q4_K_M 14B   40 layers  8 kv heads  head_dim 128   9.00 GB  (= 8.38 GiB)
+llamacpp  Q8_0   14B   40 layers  8 kv heads  head_dim 128  15.70 GB  (= "the 14B Q8")
+mlx       4bit    8B   36 layers  8 kv heads  head_dim 128   4.61 GB
+hf-cache  bf16   14B   40 layers  8 kv heads  head_dim 128  29.54 GB
+```
+
 ### LM Studio's own estimator is weights-only
 
 `lms load --estimate-only` looks like a free, authoritative footprint. It is
