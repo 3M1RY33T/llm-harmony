@@ -1,3 +1,4 @@
+pub mod convert;
 pub mod download;
 pub mod fit;
 pub mod hf;
@@ -5,3 +6,4 @@ pub mod ollama;
 pub mod place;
 pub mod provenance;
 pub mod run;
+pub mod siblings;

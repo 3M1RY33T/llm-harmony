@@ -11,7 +11,7 @@ fn is_build(a: &crate::inventory::artifact::Artifact) -> bool {
         a.format,
         crate::inventory::artifact::Format::Gguf
             | crate::inventory::artifact::Format::Mlx
-            | crate::inventory::artifact::Format::SafetensorsBf16
+            | crate::inventory::artifact::Format::Safetensors(_)
     )
 }
 

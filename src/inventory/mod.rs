@@ -56,7 +56,7 @@ impl Inventory {
     pub fn weights_artifact(&self, id: &ArtifactId) -> Option<&Artifact> {
         let given = self.artifacts.iter().find(|a| &a.id == id)?;
         let is_weights =
-            |f: Format| matches!(f, Format::Gguf | Format::Mlx | Format::SafetensorsBf16);
+            |f: Format| f.is_weights();
 
         if is_weights(given.format) {
             return Some(given);

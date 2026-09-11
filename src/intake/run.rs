@@ -79,22 +79,30 @@ pub enum AddOutcome {
     Refused { reason: String },
 }
 
-/// GGUF files in a model repo that are not the model.
+/// The source format, in the words the repo used.
 ///
-/// Found running it, 2026-09-11: `unsloth/Qwen3.8-27B-GGUF` ships a 13 MB
-/// `imatrix_unsloth.gguf` beside its multi-gigabyte builds, and "smallest
-/// loadable" cheerfully chose the importance matrix — a calibration artefact
-/// used to *produce* a quantisation, which no provider will serve. A projector
-/// (`mmproj`) is the same class of thing: real, loadable alongside a model,
-/// and not one.
-const NOT_A_BUILD: [&str; 2] = ["imatrix", "mmproj"];
-
-fn is_a_build(f: &hf::RepoFile) -> bool {
-    if !matches!(f.format, Format::Gguf | Format::Mlx) {
-        return false;
+/// "bf16 safetensors" was printed for every safetensors repo, quantised or
+/// not, because the format came from the file extension. Now it names what
+/// `config.json` declared, with the bit width where one was given.
+fn described_source(repo: &hf::Repo) -> String {
+    match repo.quant_method.as_deref() {
+        None => "bf16 safetensors".to_string(),
+        Some(method) => match repo.quant_bits {
+            Some(bits) => format!("{bits}-bit {method} safetensors"),
+            None => format!("{method} safetensors"),
+        },
     }
-    let lower = f.name.to_ascii_lowercase();
-    !NOT_A_BUILD.iter().any(|marker| lower.contains(marker))
+}
+
+/// Moved onto `RepoFile` 2026-09-11 so `siblings` shares it.
+///
+/// It was private here, and `siblings` reimplemented "smallest servable file"
+/// without it — which picked `mmproj-F32.gguf` out of a GGUF repo and offered
+/// a 0.9 GB projector as a replacement for a 27B model.
+use hf::RepoFile;
+
+fn is_a_build(f: &RepoFile) -> bool {
+    f.is_a_build()
 }
 
 /// Split `…-00003-of-00007.gguf` into its stem and its shard count.
@@ -303,9 +311,23 @@ pub fn plan_add(
             reason: if repo.needs_conversion() {
                 // Shown and honestly labelled rather than hidden: a user should
                 // learn a build exists and harmony cannot yet use it.
+                //
+                // Named by what the repo DECLARES, since 2026-09-11. This said
+                // "publishes only bf16 safetensors" about an FP8 model, which
+                // was wrong three ways: wrong format, wrong claim that a stock
+                // vLLM could not serve it, and wrong that the conversion was
+                // beyond the installed toolchains.
                 format!(
-                    "`{repo_id}` publishes only bf16 safetensors, which needs a conversion \
-                     llm-harmony does not do yet"
+                    "`{repo_id}` publishes {}, which no provider here loads as published; \
+                     it needs a conversion llm-harmony does not do yet",
+                    described_source(&repo)
+                )
+            } else if let Some(method) = &repo.quant_method {
+                // Declared, and not one this build knows. Saying so beats
+                // either guessing bf16 or claiming the repo is empty.
+                format!(
+                    "`{repo_id}` declares `{method}`, which this build does not know how to \
+                     read; no provider here loads it and no converter here can open it"
                 )
             } else {
                 format!("`{repo_id}` publishes no GGUF or MLX build")
@@ -424,6 +446,8 @@ mod tests {
             downloads: 0,
             likes: 0,
             base_model: None,
+            quant_method: None,
+            quant_bits: None,
             files: files
                 .iter()
                 .map(|(n, s)| hf::RepoFile {

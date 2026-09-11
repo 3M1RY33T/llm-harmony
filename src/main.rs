@@ -253,6 +253,17 @@ enum Command {
         context: Option<u32>,
         #[arg(long, value_name = "BYTES")]
         reserve: Option<u64>,
+        /// Price a model this machine does not have, from a geometry you
+        /// supply: `{"arch":…,"n_layers":…,"n_kv_heads":…,"head_dim":…,
+        /// "weights_bytes":…,"trained_context":…}`.
+        ///
+        /// Without it a model that has never been downloaded can only be
+        /// priced from its published size and reported `declared` — weights,
+        /// and not the cache that scales with the window. With it the computed
+        /// rung works before a byte moves. All four geometry fields are
+        /// required; a partial shape is refused rather than defaulted.
+        #[arg(long, value_name = "JSON")]
+        shape: Option<String>,
         #[arg(long)]
         json: bool,
     },
@@ -279,6 +290,44 @@ enum Command {
         /// Answer the whole verdict and move nothing.
         #[arg(long)]
         dry_run: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Convert a model into a format a provider here can load.
+    ///
+    /// The expensive route. `siblings` is the cheap one and is worth asking
+    /// first: converting a quantised source means dequantise then requantise,
+    /// lossy twice and tens of gigabytes of scratch, to reach an artifact
+    /// somebody has usually already published.
+    Convert {
+        hf_id: String,
+        /// `gguf` or `mlx`.
+        #[arg(long)]
+        to: String,
+        /// Output bit depth, where the target takes one.
+        #[arg(long)]
+        bits: Option<u8>,
+        /// Answer the whole verdict and move nothing.
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Other builds of the same model that this machine can actually serve.
+    ///
+    /// The cheap answer when a repo cannot be served as published. Converting
+    /// a quantised source means dequantise then requantise -- lossy twice, and
+    /// tens of gigabytes of scratch -- to reach an artifact somebody has
+    /// usually already built. Every candidate is confirmed by reading its own
+    /// repo: a name is not a format.
+    Siblings {
+        hf_id: String,
+        /// Only formats this provider serves. Every reachable provider's,
+        /// otherwise.
+        #[arg(long)]
+        provider: Option<String>,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
         #[arg(long)]
         json: bool,
     },
@@ -778,6 +827,11 @@ fn main() -> ExitCode {
                             "url": url,
                             "reachable": reachable,
                             "actuation": actuation,
+                            // What it can load, from the adapter rather than
+                            // from a table in a document. `inventory.md` §6
+                            // used to be the only place this was written down
+                            // and it was wrong for the machine it described.
+                            "formats": llm_harmony::adapters::adapter_for(*kind).formats(),
                         })
                     })
                     .collect();
@@ -1337,7 +1391,19 @@ fn main() -> ExitCode {
                 }
             }
         }
-        Command::Estimate { model, context, reserve, json } => {
+        Command::Estimate { model, context, reserve, shape, json } => {
+            // A supplied shape short-circuits the ladder's lower rungs but not
+            // its top one: a model that HAS been measured here is still
+            // reported measured, because an observation of this machine beats
+            // an arithmetic from someone else's catalog.
+            let supplied = match shape.as_deref().map(llm_harmony::estimate::shape::ModelShape::from_json) {
+                Some(Ok(s)) => Some(s),
+                Some(Err(e)) => {
+                    eprintln!("llm-harmony: {e}");
+                    return ExitCode::FAILURE;
+                }
+                None => None,
+            };
             let machine = match Machine::read() {
                 Ok(m) => m,
                 Err(e) => {
@@ -1361,12 +1427,29 @@ fn main() -> ExitCode {
             let inventory = llm_harmony::inventory::Inventory::scan_offline(None);
             let candidates =
                 llm_harmony::resolve::identity::candidates(&ledger, &inventory, &model);
-            let est =
+            let mut est =
                 estimate_for(&config, &ledger, &inventory, &candidates, &model, context, &corpus);
+            let mut shape_source = "artifact";
+            if let Some(shape) = &supplied {
+                if est.basis != llm_harmony::estimate::estimator::Basis::Measured {
+                    let kv = llm_harmony::estimate::computed::KV_DTYPE_BYTES;
+                    let window = context.or(shape.trained_context).unwrap_or(8192);
+                    est = llm_harmony::estimate::computed::computed(shape, window, kv);
+                    // Provenance does not launder: the figure is computed, and
+                    // the document says whose arithmetic the geometry came
+                    // from. The same rule `Provenance::Inferred` applies to
+                    // identity.
+                    shape_source = "supplied";
+                }
+            }
             if json {
+                let mut doc = llm_harmony::render_estimate::document(&est);
+                if let Some(map) = doc.as_object_mut() {
+                    map.insert("shape_source".into(), serde_json::json!(shape_source));
+                }
                 println!(
                     "{}",
-                    serde_json::to_string_pretty(&llm_harmony::render_estimate::document(&est))
+                    serde_json::to_string_pretty(&doc)
                         .unwrap()
                 );
             } else {
@@ -1546,6 +1629,164 @@ fn main() -> ExitCode {
                 println!("{}", serde_json::to_string_pretty(&doc).unwrap());
             } else {
                 println!("added {}", last.display());
+            }
+            ExitCode::SUCCESS
+        }
+        Command::Convert { hf_id, to, bits, dry_run, json } => {
+            let target = match to.trim().to_ascii_lowercase().as_str() {
+                "gguf" => llm_harmony::intake::convert::Target::Gguf,
+                "mlx" => llm_harmony::intake::convert::Target::Mlx,
+                other => {
+                    eprintln!("llm-harmony: `{other}` is not a target; use gguf or mlx");
+                    return ExitCode::FAILURE;
+                }
+            };
+            let http = Http::new(Duration::from_secs(20));
+            let repo = match llm_harmony::intake::hf::repo(&http, &hf_id) {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("llm-harmony: could not read `{hf_id}`: {e:?}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            let Some((source_format, source_bytes)) =
+                llm_harmony::intake::convert::source_of(&repo)
+            else {
+                eprintln!(
+                    "llm-harmony: `{hf_id}` publishes no safetensors to convert from \
+                     (or does not publish their sizes)"
+                );
+                return ExitCode::FAILURE;
+            };
+            let config = Config::load(None).unwrap_or_else(|_| Config::defaults());
+            let converter = llm_harmony::intake::convert::discover(&config, target);
+            let store = match target {
+                llm_harmony::intake::convert::Target::Gguf =>
+                    llm_harmony::inventory::artifact::Store::LlamaCpp,
+                llm_harmony::intake::convert::Target::Mlx =>
+                    llm_harmony::inventory::artifact::Store::Vllm,
+            };
+            let dir = llm_harmony::intake::place::directory_for(store, &hf_id)
+                .unwrap_or_else(|| std::path::PathBuf::from("."));
+            let request = llm_harmony::intake::convert::Request {
+                repo: hf_id.clone(),
+                target,
+                source_format,
+                download_bytes: source_bytes,
+                bits,
+                converter,
+                free_disk_bytes: llm_harmony::intake::fit::free_disk_bytes(&dir),
+                out_path: match target {
+                    // A GGUF is one file; an MLX build is a directory.
+                    llm_harmony::intake::convert::Target::Gguf => dir
+                        .join(format!("{}.gguf", hf_id.replace('/', "_")))
+                        .display()
+                        .to_string(),
+                    llm_harmony::intake::convert::Target::Mlx => dir.display().to_string(),
+                },
+            };
+            match llm_harmony::intake::convert::plan(&request) {
+                Ok(plan) => {
+                    if json {
+                        let mut doc = serde_json::to_value(&plan).unwrap();
+                        if let Some(map) = doc.as_object_mut() {
+                            map.insert("schema".into(), serde_json::json!(1));
+                            map.insert("dry_run".into(), serde_json::json!(dry_run));
+                        }
+                        println!("{}", serde_json::to_string_pretty(&doc).unwrap());
+                    } else {
+                        println!("  {} -> {}", hf_id, plan.target.as_str());
+                        println!(
+                            "  {} download · {} scratch · {} result",
+                            llm_harmony::render::human_bytes(plan.download_bytes),
+                            llm_harmony::render::human_bytes(plan.scratch_bytes),
+                            llm_harmony::render::human_bytes(plan.result_bytes),
+                        );
+                        println!("  {}", plan.argv.join(" "));
+                    }
+                    if !dry_run {
+                        // Executing is slice 7's second half. Planning it is
+                        // the half that makes the refusal honest, and shipping
+                        // that first means nobody is told "cannot" about a
+                        // conversion two installed tools can perform.
+                        eprintln!(
+                            "llm-harmony: running a conversion is not implemented yet;                              this is the plan it would run"
+                        );
+                        return ExitCode::FAILURE;
+                    }
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("llm-harmony: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        Command::Siblings { hf_id, provider, limit, json } => {
+            let kind = match provider.as_deref().map(str::parse::<llm_harmony::provider::ProviderKind>) {
+                Some(Ok(k)) => Some(k),
+                Some(Err(e)) => {
+                    eprintln!("llm-harmony: {e}");
+                    return ExitCode::FAILURE;
+                }
+                None => None,
+            };
+            let http = Http::new(Duration::from_secs(20));
+            let source = match llm_harmony::intake::hf::repo(&http, &hf_id) {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("llm-harmony: could not read `{hf_id}`: {e:?}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            // Which formats count is a question about THIS machine: every
+            // reachable provider's, or one named provider's. The same answer
+            // `verify` now publishes.
+            let config = Config::load(None).unwrap_or_else(|_| Config::defaults());
+            let probe = Http::new(Duration::from_millis(1500));
+            let mut servable: Vec<llm_harmony::inventory::artifact::Format> = Vec::new();
+            for p in &config.providers {
+                if kind.is_some_and(|k| k != p.kind) {
+                    continue;
+                }
+                let adapter = llm_harmony::adapters::adapter_for(p.kind);
+                // An unreachable provider's formats still count: it can be
+                // started, and refusing to name a build because a server
+                // happens to be down would be answering a different question.
+                for f in adapter.formats() {
+                    if !servable.contains(&f) {
+                        servable.push(f);
+                    }
+                }
+                let _ = adapter.probe(&probe, &p.url);
+            }
+            // Candidates from HF's own search on the declared base model --
+            // and every one of them re-read before it is offered.
+            let query = source.base_model.clone().unwrap_or_else(|| hf_id.clone());
+            let candidates =
+                llm_harmony::intake::hf::search(&http, &query, limit).unwrap_or_default();
+            let found = llm_harmony::intake::siblings::for_repo(&source, &candidates, &servable);
+
+            if json {
+                let doc = serde_json::json!({
+                    "schema": 1,
+                    "repo": hf_id,
+                    "base_model": source.base_model,
+                    "servable_formats": servable,
+                    "siblings": found,
+                });
+                println!("{}", serde_json::to_string_pretty(&doc).unwrap());
+            } else if found.is_empty() {
+                println!("  no other build of this model is servable here");
+            } else {
+                for s in &found {
+                    println!(
+                        "  {:<52} {:>9}  {:?}",
+                        s.repo,
+                        llm_harmony::render::human_bytes(s.bytes),
+                        s.format
+                    );
+                }
             }
             ExitCode::SUCCESS
         }

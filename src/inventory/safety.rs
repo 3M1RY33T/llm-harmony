@@ -1,4 +1,4 @@
-use crate::inventory::artifact::{Artifact, ArtifactId, Format, Store};
+use crate::inventory::artifact::{Artifact, ArtifactId, Format, Store, Quant};
 
 /// Three kinds of "safe to delete", which are not the same risk.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -34,7 +34,7 @@ pub fn classify(a: &Artifact, peers: &[Artifact]) -> Safety {
     }
 
     // A source can be re-downloaded. Priced, not free.
-    if a.store == Store::HfCache || a.format == Format::SafetensorsBf16 {
+    if a.store == Store::HfCache || matches!(a.format, Format::Safetensors(_)) {
         return Safety::Reproducible {
             how: "re-download from Hugging Face".to_string(),
         };
@@ -43,7 +43,7 @@ pub fn classify(a: &Artifact, peers: &[Artifact]) -> Safety {
     // A converted artifact whose source is still present can be rebuilt.
     let source_present = peers
         .iter()
-        .any(|p| p.format == Format::SafetensorsBf16 || p.store == Store::HfCache);
+        .any(|p| matches!(p.format, Format::Safetensors(_)) || p.store == Store::HfCache);
     if source_present {
         return Safety::Reproducible {
             how: "re-convert from the local source".to_string(),
@@ -102,7 +102,7 @@ mod tests {
 
     #[test]
     fn an_hf_source_is_reproducible() {
-        let src = art("a", "org/model", None, Format::SafetensorsBf16, Store::HfCache);
+        let src = art("a", "org/model", None, Format::Safetensors(Quant::Bf16), Store::HfCache);
         assert!(matches!(classify(&src, &vec![src.clone()]), Safety::Reproducible { .. }));
     }
 

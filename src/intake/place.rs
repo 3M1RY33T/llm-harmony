@@ -12,7 +12,7 @@
 
 use std::path::PathBuf;
 
-use crate::inventory::artifact::{Format, Store};
+use crate::inventory::artifact::{Format, Quant, Store};
 use crate::inventory::scan::StoreScanner;
 use crate::provider::ProviderKind;
 
@@ -23,16 +23,25 @@ use crate::provider::ProviderKind;
 /// provider here loads bf16 safetensors without a conversion this slice does
 /// not do.
 pub fn store_for(provider: ProviderKind, format: Format) -> Option<Store> {
-    match (provider, format) {
-        (ProviderKind::LmStudio, Format::Gguf) => Some(Store::LmStudio),
-        (ProviderKind::LmStudio, Format::Mlx) => Some(Store::LmStudio),
-        (ProviderKind::LlamaCpp, Format::Gguf) => Some(Store::LlamaCpp),
-        (ProviderKind::Vllm, Format::Mlx) => Some(Store::Vllm),
-        // Ollama's store is a blob database keyed by digest, written by its own
-        // pull. Dropping a file into it produces something nothing will load.
-        (ProviderKind::Ollama, _) => None,
-        _ => None,
+    // Ollama's store is a blob database keyed by digest, written by its own
+    // pull. It can SERVE the format -- `adapter.formats()` says so -- and it
+    // still takes no file drop, which is a different question and the one this
+    // function asks. `intake::ollama` carries the transport that does work.
+    if provider == ProviderKind::Ollama {
+        return None;
     }
+    // Asked, not tabled: this used to repeat the adapter's knowledge in a
+    // second `match`, and a second copy of a fact is a second chance to have
+    // it wrong. See `Adapter::formats`.
+    if !crate::adapters::adapter_for(provider).formats().contains(&format) {
+        return None;
+    }
+    Some(match provider {
+        ProviderKind::LmStudio => Store::LmStudio,
+        ProviderKind::LlamaCpp => Store::LlamaCpp,
+        ProviderKind::Vllm => Store::Vllm,
+        ProviderKind::Ollama => return None,
+    })
 }
 
 /// The directory a repo's files land in, or `None` when the store has no root
@@ -89,7 +98,7 @@ mod tests {
 
     #[test]
     fn a_format_no_provider_here_can_load_has_nowhere_to_go() {
-        assert_eq!(store_for(ProviderKind::LmStudio, Format::SafetensorsBf16), None);
+        assert_eq!(store_for(ProviderKind::LmStudio, Format::Safetensors(Quant::Bf16)), None);
     }
 
     #[test]

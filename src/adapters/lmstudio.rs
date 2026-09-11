@@ -76,6 +76,13 @@ impl Adapter for LmStudio {
     /// LM Studio's REST API has no load or unload route; `lms` is the whole
     /// control plane. So harmony shells out -- and the binary being findable
     /// on PATH is therefore a hard dependency of eviction on this provider.
+    /// Both, and it is the only one of the four that takes both. Verified
+    /// against its own store layout, which holds GGUF and MLX side by side.
+    fn formats(&self) -> Vec<crate::inventory::artifact::Format> {
+        use crate::inventory::artifact::Format;
+        vec![Format::Gguf, Format::Mlx]
+    }
+
     fn load(
         &self,
         http: &Http,

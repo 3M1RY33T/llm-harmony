@@ -374,3 +374,93 @@ fn a_config_with_no_weights_beside_it_is_not_a_model() {
     );
     assert!(shape::from_mlx_config(&t.root).is_none());
 }
+
+// --- A shape handed in rather than read off a file (r28 Task 4) ------------
+//
+// `ModelShape` could only ever be read from an artifact: a GGUF header or an
+// MLX config. So a model that has never been downloaded is priced from its
+// published size alone and reported `Declared`, which `actuate::plan` then
+// refuses to admit on, and which Delroy surfaces to users as:
+//
+//     only a declared figure is available, which covers weights and not the
+//     cache that scales with the window
+//
+// That is the coldest message this project ships. A shape is a shape wherever
+// it came from — given one, the computed rung works before a byte moves.
+
+use llm_harmony::estimate::shape::ModelShape;
+
+fn good_shape_json() -> &'static str {
+    r#"{"arch":"qwen3","n_layers":36,"n_kv_heads":8,"head_dim":128,
+        "weights_bytes":6012954214,"trained_context":262144}"#
+}
+
+#[test]
+fn a_shape_can_be_supplied_rather_than_read_from_a_file() {
+    let shape = ModelShape::from_json(good_shape_json()).expect("a complete shape");
+    assert_eq!(shape.arch, "qwen3");
+    assert_eq!(shape.n_layers, 36);
+    assert_eq!(shape.n_kv_heads, 8);
+    assert_eq!(shape.head_dim, 128);
+    assert_eq!(shape.trained_context, Some(262144));
+}
+
+/// And the number it produces is the number the same shape read from disk
+/// would have produced. There is one computed rung, not two.
+#[test]
+fn a_supplied_shape_prices_identically_to_the_same_shape_read_from_disk() {
+    let supplied = ModelShape::from_json(good_shape_json()).unwrap();
+    let on_disk = ModelShape {
+        arch: "qwen3".into(),
+        n_layers: 36,
+        n_kv_heads: 8,
+        head_dim: 128,
+        weights_bytes: 6_012_954_214,
+        trained_context: Some(262_144),
+    };
+    let a = llm_harmony::estimate::computed::computed(
+        &supplied, 8192, llm_harmony::estimate::computed::KV_DTYPE_BYTES);
+    let b = llm_harmony::estimate::computed::computed(
+        &on_disk, 8192, llm_harmony::estimate::computed::KV_DTYPE_BYTES);
+    assert_eq!(a.bytes, b.bytes);
+    assert_eq!(a.basis, b.basis);
+}
+
+/// A partial geometry is no geometry. `n_kv_heads` defaulted to the attention
+/// head count under-counts the cache fivefold on this machine's models — the
+/// struct's own doc comment says so — and a caller-supplied shape must not be
+/// where that rule gets forgotten.
+#[test]
+fn an_incomplete_supplied_shape_is_refused_rather_than_defaulted() {
+    for missing in [
+        r#"{"arch":"qwen3","n_layers":36,"head_dim":128,"weights_bytes":1}"#,
+        r#"{"arch":"qwen3","n_kv_heads":8,"head_dim":128,"weights_bytes":1}"#,
+        r#"{"arch":"qwen3","n_layers":36,"n_kv_heads":8,"weights_bytes":1}"#,
+        r#"{"n_layers":36,"n_kv_heads":8,"head_dim":128,"weights_bytes":1}"#,
+    ] {
+        assert!(ModelShape::from_json(missing).is_err(), "{missing}");
+    }
+}
+
+/// Zero is not a value here either: a shape claiming no layers would price a
+/// model at its weights and call the answer computed.
+#[test]
+fn a_zero_in_a_supplied_shape_is_refused() {
+    let zeroed = r#"{"arch":"qwen3","n_layers":0,"n_kv_heads":8,"head_dim":128,
+                     "weights_bytes":1}"#;
+    assert!(ModelShape::from_json(zeroed).is_err());
+}
+
+/// Weights are the floor of every estimate, so a shape without them cannot be
+/// priced at all.
+#[test]
+fn a_supplied_shape_without_weights_is_refused() {
+    let no_weights = r#"{"arch":"qwen3","n_layers":36,"n_kv_heads":8,"head_dim":128}"#;
+    assert!(ModelShape::from_json(no_weights).is_err());
+}
+
+#[test]
+fn a_supplied_shape_that_is_not_json_is_refused_with_a_reason() {
+    let err = ModelShape::from_json("not json").unwrap_err();
+    assert!(!err.is_empty());
+}

@@ -30,27 +30,95 @@ impl Store {
     }
 }
 
+/// What is inside a safetensors container.
+///
+/// `.safetensors` is a container and nothing more: bf16, FP8, AWQ, GPTQ and
+/// several others all wear the same extension, and which one it is decides
+/// whether a provider can load the file, whether it needs converting, and what
+/// converting it would even mean.
+///
+/// Deliberately `Copy` and payload-free. The raw string a repo declared is
+/// carried on `hf::Repo` instead, where a refusal can name it -- putting it
+/// here would cost `Format` its `Copy` across a dozen comparison sites for a
+/// value only error messages read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Quant {
+    /// Nothing declared. That genuinely means bf16 -- it is the unquantised
+    /// default, and the only case where silence is an answer.
+    Bf16,
+    /// vLLM's llm-compressor output. `recipe.yaml` beside the weights is its
+    /// signature, and a stock vLLM loads it directly.
+    CompressedTensors,
+    Awq,
+    Gptq,
+    Fp8,
+    BitsAndBytes,
+    /// Declared, and not one this build knows.
+    ///
+    /// **Never folded into `Bf16`.** Guessing "probably bf16" for an
+    /// unrecognised method is how a 55 GB dequantisation gets planned for a
+    /// file that was never 16-bit.
+    Unknown,
+}
+
+impl Quant {
+    /// What `config.json`'s `quantization_config.quant_method` says.
+    pub fn from_method(method: &str) -> Quant {
+        match method.trim().to_ascii_lowercase().as_str() {
+            "compressed-tensors" | "compressed_tensors" => Quant::CompressedTensors,
+            "awq" => Quant::Awq,
+            "gptq" => Quant::Gptq,
+            "fp8" => Quant::Fp8,
+            "bitsandbytes" | "bnb" => Quant::BitsAndBytes,
+            _ => Quant::Unknown,
+        }
+    }
+
+    /// Is this something a converter can read back to full precision?
+    ///
+    /// bf16 needs no dequantisation; the two the installed toolchains handle
+    /// are FP8 (`convert_hf_to_gguf.py --fp8-as-q8`) and, through
+    /// `mlx_lm.convert(dequantize=True)`, the compressed-tensors family. An
+    /// `Unknown` is not convertible **because harmony does not know it is**,
+    /// which is a different claim from it being impossible.
+    pub fn is_convertible(&self) -> bool {
+        matches!(self, Quant::Bf16 | Quant::Fp8 | Quant::CompressedTensors)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Format {
     Gguf,
     Mlx,
-    SafetensorsBf16,
+    /// Safetensors, with what the repo said is inside it.
+    Safetensors(Quant),
     Other,
 }
 
 impl Format {
+    /// The format of a file **on disk**, where there is no config beside it.
+    ///
+    /// A path is all this can see, so a `.safetensors` here is assumed
+    /// unquantised. `hf::repo_from_json` is the door for a repo being
+    /// considered, and it reads the declaration rather than guessing.
     pub fn from_path_str(name: &str) -> Format {
         let lower = name.to_ascii_lowercase();
         if lower.ends_with(".gguf") {
             Format::Gguf
         } else if lower.ends_with(".safetensors") {
-            Format::SafetensorsBf16
+            Format::Safetensors(Quant::Bf16)
         } else if lower.ends_with(".npz") {
             Format::Mlx
         } else {
             Format::Other
         }
+    }
+
+    /// Weight-bearing, whatever is inside it.
+    pub fn is_weights(&self) -> bool {
+        matches!(self, Format::Gguf | Format::Mlx | Format::Safetensors(_))
     }
 }
 
@@ -158,7 +226,7 @@ mod tests {
     #[test]
     fn format_is_read_from_the_file_shape() {
         assert_eq!(Format::from_path_str("model.q4_k_m.gguf"), Format::Gguf);
-        assert_eq!(Format::from_path_str("model.safetensors"), Format::SafetensorsBf16);
+        assert_eq!(Format::from_path_str("model.safetensors"), Format::Safetensors(Quant::Bf16));
         assert_eq!(Format::from_path_str("weights.npz"), Format::Mlx);
         assert_eq!(Format::from_path_str("README.md"), Format::Other);
     }

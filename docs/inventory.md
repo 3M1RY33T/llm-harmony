@@ -212,6 +212,18 @@ diff source capabilities against artifact capabilities and store the delta, so
 
 ## 6. Format capability matrix
 
+**Superseded as a source of truth, 2026-09-11.** `llm-harmony verify --json`
+now carries a `formats` array per provider, answered by the adapter rather than
+read from here. The table below is kept as the reasoning that produced it, and
+because the two consequences after it are still true.
+
+It was wrong for the machine it was written on. The vLLM row says safetensors
+bf16 via "convert"; the vLLM there is **vllm-mlx**, which serves MLX and loads
+no safetensors in any dtype — while a *stock* vLLM loads compressed-tensors,
+AWQ and GPTQ directly. One row cannot describe both, and the difference decides
+whether a pull is refused. `Actuation` had already made the same move in slice
+5, for the same reason: an adapter written from documentation is a hypothesis.
+
 Which providers can serve what — the table that makes "safe to delete" answerable
 across stores:
 
@@ -220,6 +232,14 @@ across stores:
 | GGUF | ✅ | ❌ | ✅ | ✅ |
 | MLX | ❌ | ✅ | ✅ | ✅ (MLX backend) |
 | safetensors bf16 | convert | convert | ❌ | ❌ |
+
+**And "safetensors" is not one row.** `.safetensors` is a container: bf16, FP8,
+compressed-tensors, AWQ, GPTQ and bitsandbytes all wear the extension, and only
+`config.json` says which. Until 2026-09-11 harmony read the extension, so every
+quantised repo on Hugging Face was reported as bf16 needing a conversion —
+including the ones a stock vLLM loads without one. Found by pulling
+`mconcat/…-FP8-Dynamic`, which is 8-bit compressed-tensors and was described as
+bf16.
 
 Two consequences worth encoding rather than rediscovering:
 

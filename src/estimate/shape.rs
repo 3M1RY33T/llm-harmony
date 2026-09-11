@@ -52,6 +52,83 @@ pub struct ModelShape {
     pub trained_context: Option<u32>,
 }
 
+/// A shape as it arrives on the command line, before it is checked.
+///
+/// Separate from `ModelShape` on purpose: every field is optional here and
+/// none are there, so the check below is the only way across and cannot be
+/// skipped by a caller in a hurry.
+#[derive(serde::Deserialize)]
+struct SuppliedShape {
+    arch: Option<String>,
+    n_layers: Option<u32>,
+    n_kv_heads: Option<u32>,
+    head_dim: Option<u32>,
+    weights_bytes: Option<u64>,
+    trained_context: Option<u32>,
+}
+
+impl ModelShape {
+    /// A shape handed in rather than read off an artifact.
+    ///
+    /// Everything else in this module derives a shape from bytes harmony read
+    /// itself. This is the one door for a shape that came from somewhere else
+    /// -- a catalog that describes a model nobody has downloaded yet -- and it
+    /// exists because the alternative is pricing that model from its published
+    /// file size and reporting `Declared`, which covers weights and not the
+    /// cache that scales with the window.
+    ///
+    /// **All four geometry fields or none.** A missing `n_kv_heads` defaulted
+    /// to the attention-head count under-counts the cache fivefold on this
+    /// machine's models, and zero is refused for the same reason a missing
+    /// value is: a shape claiming no layers would price a model at its weights
+    /// and call the answer computed. Weights are the floor of every estimate,
+    /// so their absence is fatal too.
+    pub fn from_json(raw: &str) -> Result<ModelShape, String> {
+        let supplied: SuppliedShape =
+            serde_json::from_str(raw).map_err(|e| format!("shape is not readable: {e}"))?;
+
+        let arch = supplied.arch.unwrap_or_default();
+        if arch.trim().is_empty() {
+            return Err("shape is missing `arch`".to_string());
+        }
+        let mut missing: Vec<&str> = Vec::new();
+        let mut need = |name: &'static str, value: Option<u32>| -> u32 {
+            match value {
+                Some(v) if v > 0 => v,
+                _ => {
+                    missing.push(name);
+                    0
+                }
+            }
+        };
+        let n_layers = need("n_layers", supplied.n_layers);
+        let n_kv_heads = need("n_kv_heads", supplied.n_kv_heads);
+        let head_dim = need("head_dim", supplied.head_dim);
+        let weights_bytes = match supplied.weights_bytes {
+            Some(v) if v > 0 => v,
+            _ => {
+                missing.push("weights_bytes");
+                0
+            }
+        };
+        if !missing.is_empty() {
+            return Err(format!(
+                "shape is incomplete: {} -- a partial geometry is no geometry, \
+                 because a defaulted head count under-counts the cache fivefold",
+                missing.join(", ")
+            ));
+        }
+        Ok(ModelShape {
+            arch,
+            n_layers,
+            n_kv_heads,
+            head_dim,
+            weights_bytes,
+            trained_context: supplied.trained_context.filter(|c| *c > 0),
+        })
+    }
+}
+
 /// A GGUF file, an MLX directory, or a file inside one.
 ///
 /// One entry point so no caller has to branch on format. A path that is

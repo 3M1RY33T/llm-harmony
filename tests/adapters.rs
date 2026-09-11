@@ -616,3 +616,79 @@ fn eviction_order_follows_the_expiry_through_the_adapter() {
         "ledger order is not eviction order once the expiry is real"
     );
 }
+
+// --- r29 Task 2: a provider says which formats it loads ---------------------
+//
+// `inventory.md` §6 carried a hardcoded matrix, and it was already wrong for
+// the machine in front of it: the row said vLLM takes safetensors bf16 via
+// "convert", while the vLLM here is vllm-mlx, whose `/v1/status` lists nothing
+// but MLX directories. A stock vLLM, meanwhile, loads compressed-tensors
+// directly. One row cannot describe both.
+//
+// `Actuation` already won this argument in slice 5 and its doc comment says
+// why: an adapter written from documentation is a hypothesis.
+
+use llm_harmony::inventory::artifact::{Format, Quant};
+
+#[test]
+fn llamacpp_loads_gguf_and_nothing_else() {
+    let f = LlamaCpp.formats();
+    assert!(f.contains(&Format::Gguf));
+    assert!(!f.iter().any(|x| matches!(x, Format::Mlx | Format::Safetensors(_))));
+}
+
+#[test]
+fn lmstudio_loads_both_gguf_and_mlx() {
+    let f = LmStudio.formats();
+    assert!(f.contains(&Format::Gguf));
+    assert!(f.contains(&Format::Mlx));
+}
+
+/// Ollama's store is content-addressed, so "which formats can it serve" and
+/// "can a file be dropped into it" are separate questions -- and the second
+/// being no does not make the first empty.
+#[test]
+fn ollama_loads_gguf_even_though_it_takes_no_file_drop() {
+    assert!(Ollama.formats().contains(&Format::Gguf));
+    assert_eq!(
+        llm_harmony::intake::place::store_for(ProviderKind::Ollama, Format::Gguf),
+        None,
+        "still no directory to drop into"
+    );
+}
+
+/// The one this plan exists for. vllm-mlx serves MLX; it does not load
+/// safetensors in any dtype, quantised or not.
+#[test]
+fn vllm_mlx_loads_mlx_and_not_safetensors() {
+    let f = Vllm.formats();
+    assert!(f.contains(&Format::Mlx));
+    for q in [Quant::Bf16, Quant::CompressedTensors, Quant::Fp8, Quant::Awq] {
+        assert!(!f.contains(&Format::Safetensors(q)), "{q:?}");
+    }
+}
+
+/// Placement consults the adapter rather than its own `match`, so the two can
+/// never disagree about what a provider takes.
+#[test]
+fn placement_asks_the_adapter_rather_than_repeating_the_table() {
+    use llm_harmony::intake::place::store_for;
+    use llm_harmony::inventory::artifact::Store;
+    assert_eq!(store_for(ProviderKind::LmStudio, Format::Mlx), Some(Store::LmStudio));
+    assert_eq!(store_for(ProviderKind::LlamaCpp, Format::Mlx), None);
+    assert_eq!(store_for(ProviderKind::Vllm, Format::Gguf), None);
+}
+
+/// A format nobody here loads has nowhere to go, whatever is inside it.
+#[test]
+fn no_provider_here_takes_safetensors_in_any_dtype() {
+    for kind in ProviderKind::ALL {
+        for q in [Quant::Bf16, Quant::Fp8, Quant::CompressedTensors] {
+            assert_eq!(
+                llm_harmony::intake::place::store_for(kind, Format::Safetensors(q)),
+                None,
+                "{kind} {q:?}"
+            );
+        }
+    }
+}

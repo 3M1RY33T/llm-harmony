@@ -102,6 +102,14 @@ impl Adapter for Ollama {
     /// Ollama's whole control plane is `keep_alive` on an ordinary request:
     /// a duration holds the model, zero drops it. The prompt is empty -- this
     /// is a control call and carries no content, ever.
+    /// GGUF, and MLX through its own backend. Separate from whether a file
+    /// can be dropped into its store -- it cannot, and `place::store_for`
+    /// still says so.
+    fn formats(&self) -> Vec<crate::inventory::artifact::Format> {
+        use crate::inventory::artifact::Format;
+        vec![Format::Gguf, Format::Mlx]
+    }
+
     fn load(
         &self,
         http: &Http,

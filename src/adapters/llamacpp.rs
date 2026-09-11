@@ -91,6 +91,11 @@ impl Adapter for LlamaCpp {
         Actuation::SelfManaged { ceiling: CEILING }
     }
 
+    /// GGUF only. `llama-server` loads nothing else, in any dtype.
+    fn formats(&self) -> Vec<crate::inventory::artifact::Format> {
+        vec![crate::inventory::artifact::Format::Gguf]
+    }
+
     fn load(
         &self,
         _http: &Http,

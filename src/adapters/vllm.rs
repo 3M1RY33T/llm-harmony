@@ -80,6 +80,17 @@ impl Adapter for Vllm {
         Actuation::SelfManaged { ceiling: CEILING }
     }
 
+    /// MLX only, on this machine.
+    ///
+    /// This is **vllm-mlx**, whose `/v1/status` lists MLX directories under
+    /// `~/.vllm-mlx/models/` and which loads nothing else. A stock vLLM would
+    /// return safetensors here, including the quantised forms -- which is
+    /// exactly why the answer belongs on the adapter rather than in a table
+    /// that has to pick one of the two and be wrong for the other.
+    fn formats(&self) -> Vec<crate::inventory::artifact::Format> {
+        vec![crate::inventory::artifact::Format::Mlx]
+    }
+
     fn load(
         &self,
         _http: &Http,

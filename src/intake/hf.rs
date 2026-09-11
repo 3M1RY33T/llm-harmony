@@ -11,7 +11,7 @@
 use serde::Serialize;
 
 use crate::http::Http;
-use crate::inventory::artifact::{bits_from_name, Format};
+use crate::inventory::artifact::{bits_from_name, Format, Quant};
 use crate::provider::ProbeError;
 
 const API: &str = "https://huggingface.co/api";
@@ -32,6 +32,15 @@ pub struct Repo {
     pub id: String,
     pub downloads: u64,
     pub likes: u64,
+    /// `quantization_config.quant_method`, verbatim.
+    ///
+    /// The enum is `Copy` and payload-free so every comparison site stays
+    /// cheap; the raw string lives here so a refusal can name exactly what it
+    /// read -- "declares `some-new-thing`, which this build does not know" is
+    /// a message someone can act on, and "unknown" is not.
+    pub quant_method: Option<String>,
+    /// Bit width, where the declaration carries one.
+    pub quant_bits: Option<u8>,
     /// From the repo card. `None` is the common honest case, not a red flag —
     /// see `provenance`.
     pub base_model: Option<String>,
@@ -44,16 +53,49 @@ impl Repo {
     /// A bf16-only repo is *shown* and marked, never hidden: a user searching
     /// for a model should learn that a build exists and that harmony cannot yet
     /// use it, not conclude there is none.
+    /// Nothing here loads as published, but a converter could read it.
+    ///
+    /// Narrowed 2026-09-11. This used to be "every file is safetensors", which
+    /// read the extension and so covered every quantised repo on Hugging Face
+    /// -- including ones a stock vLLM loads directly. Now it means what it
+    /// says: no loadable build, and a source format a converter can get back
+    /// to full precision. A declaration harmony does not recognise is neither
+    /// loadable nor convertible, and says so rather than promising a
+    /// conversion it has no idea how to perform.
     pub fn needs_conversion(&self) -> bool {
         !self.files.is_empty()
-            && self
-                .files
-                .iter()
-                .all(|f| matches!(f.format, Format::SafetensorsBf16))
+            && !self.has_loadable_build()
+            && self.files.iter().any(|f| {
+                matches!(f.format, Format::Safetensors(q) if q.is_convertible())
+            })
     }
 
     pub fn has_loadable_build(&self) -> bool {
         self.files.iter().any(|f| matches!(f.format, Format::Gguf | Format::Mlx))
+    }
+}
+
+/// Files in a model repo that are loadable and are not the model.
+///
+/// Found running it, 2026-09-11: `unsloth/Qwen3.8-27B-GGUF` ships a 13 MB
+/// `imatrix_unsloth.gguf` beside its multi-gigabyte builds, and "smallest
+/// loadable" cheerfully chose the importance matrix — a calibration artefact
+/// used to *produce* a quantisation, which no provider will serve. A projector
+/// (`mmproj`) is the same class of thing: real, loadable alongside a model,
+/// and not one. Found again the same day in `siblings`, which reimplemented
+/// the same pick without this and offered a 0.9 GB projector as a replacement
+/// for a 27B model — which is why the rule now lives on the file rather than
+/// in whichever module thought of it first.
+const NOT_A_BUILD: [&str; 2] = ["imatrix", "mmproj"];
+
+impl RepoFile {
+    /// A thing a provider would actually serve as a model.
+    pub fn is_a_build(&self) -> bool {
+        if !matches!(self.format, Format::Gguf | Format::Mlx) {
+            return false;
+        }
+        let lower = self.name.to_ascii_lowercase();
+        !NOT_A_BUILD.iter().any(|marker| lower.contains(marker))
     }
 }
 
@@ -65,12 +107,64 @@ fn first_string(v: &serde_json::Value) -> Option<String> {
     v.as_array()?.iter().find_map(|e| e.as_str()).map(|s| s.to_string())
 }
 
-fn classify(name: &str) -> Option<RepoFile> {
-    let format = Format::from_path_str(name);
-    if matches!(format, Format::Other) {
-        return None;
-    }
+fn classify(name: &str, quant: Quant, is_mlx: bool) -> Option<RepoFile> {
+    let format = match Format::from_path_str(name) {
+        // The extension says "safetensors"; the repo says what is in it.
+        //
+        // MLX on Hugging Face IS safetensors -- `.npz` is the old format and
+        // nobody publishes it any more -- so a repo declaring `library_name:
+        // mlx` is declaring the container's contents just as surely as
+        // `quantization_config` does. Without this, intake classified every
+        // modern MLX repo as PyTorch and could pull none of them, on a machine
+        // where two of four providers serve MLX natively.
+        Format::Safetensors(_) if is_mlx => Format::Mlx,
+        Format::Safetensors(_) => Format::Safetensors(quant),
+        Format::Other => return None,
+        // An unambiguous extension is not overruled: a GGUF in an MLX-tagged
+        // repo is still a GGUF.
+        other => other,
+    };
     Some(RepoFile { name: name.to_string(), format, bits: bits_from_name(name), size_bytes: None })
+}
+
+/// What `config.json` declares is inside this repo's safetensors.
+///
+/// The whole reason this is possible for free: `GET /api/models/{id}` returns
+/// `config`, and until 2026-09-11 `repo_from_json` parsed that response and
+/// kept only the file list — so every quantised repo was reported as bf16 and
+/// refused for a conversion it did not need.
+/// Does this repo declare itself MLX?
+///
+/// `library_name` is the authoritative field and `tags` carries the same claim;
+/// HF sets one or both. Both are in the response already fetched.
+fn declares_mlx(value: &serde_json::Value) -> bool {
+    if value["library_name"].as_str().is_some_and(|l| l.eq_ignore_ascii_case("mlx")) {
+        return true;
+    }
+    value["tags"]
+        .as_array()
+        .is_some_and(|tags| tags.iter().any(|t| t.as_str().is_some_and(|t| t.eq_ignore_ascii_case("mlx"))))
+}
+
+fn declared_quant(value: &serde_json::Value) -> (Quant, Option<String>, Option<u8>) {
+    let config = &value["config"]["quantization_config"];
+    let Some(method) = config["quant_method"].as_str() else {
+        // Nothing declared is genuinely bf16: the unquantised default.
+        return (Quant::Bf16, None, None);
+    };
+    // `num_bits` sits under a per-group weights block on compressed-tensors
+    // and at the top level on others. Both are read; neither is required.
+    let bits = config["bits"]
+        .as_u64()
+        .or_else(|| config["weight_bits"].as_u64())
+        .or_else(|| {
+            config["config_groups"]
+                .as_object()?
+                .values()
+                .find_map(|g| g["weights"]["num_bits"].as_u64())
+        })
+        .and_then(|b| u8::try_from(b).ok());
+    (Quant::from_method(method), Some(method.to_string()), bits)
 }
 
 /// Parse one repo out of HF's model JSON. Split from the fetch so the shape is
@@ -85,11 +179,14 @@ pub fn repo_from_json(value: &serde_json::Value) -> Option<Repo> {
     let base_model = first_string(&value["cardData"]["base_model"])
         .or_else(|| first_string(&value["config"]["base_model"]));
 
+    let (quant, quant_method, quant_bits) = declared_quant(value);
+    let is_mlx = declares_mlx(value);
+
     let mut files = Vec::new();
     if let Some(siblings) = value["siblings"].as_array() {
         for s in siblings {
             let Some(name) = s["rfilename"].as_str() else { continue };
-            let Some(mut f) = classify(name) else { continue };
+            let Some(mut f) = classify(name, quant, is_mlx) else { continue };
             f.size_bytes = s["size"].as_u64().or_else(|| s["lfs"]["size"].as_u64());
             files.push(f);
         }
@@ -99,6 +196,8 @@ pub fn repo_from_json(value: &serde_json::Value) -> Option<Repo> {
         downloads: value["downloads"].as_u64().unwrap_or(0),
         likes: value["likes"].as_u64().unwrap_or(0),
         base_model,
+        quant_method,
+        quant_bits,
         files,
     })
 }

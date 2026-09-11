@@ -193,6 +193,22 @@ pub trait Adapter: Send + Sync {
     /// What this adapter may do beyond observing. Verified, not declared.
     fn actuation(&self) -> Actuation;
 
+    /// Which artifact formats this provider can load.
+    ///
+    /// The same kind of claim as `actuation`, and it earns its place for the
+    /// same reason: `inventory.md` §6 carried a hardcoded matrix and it was
+    /// already wrong for the machine it was written on. The row said vLLM
+    /// takes safetensors bf16 "convert"; the vLLM there is vllm-mlx, which
+    /// loads MLX and nothing else, while a stock vLLM loads compressed-tensors
+    /// directly. One table cannot describe both, and the difference decides
+    /// whether a pull is refused.
+    ///
+    /// Returned by the adapter rather than probed over HTTP because none of
+    /// the four publishes a format list — this is the adapter's own knowledge
+    /// of the server it was written against, which is what the type makes
+    /// explicit and a shared table hid.
+    fn formats(&self) -> Vec<crate::inventory::artifact::Format>;
+
     /// Make this model resident, at the window asked for.
     ///
     /// Returns once the provider has accepted the instruction; residency is

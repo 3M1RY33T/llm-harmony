@@ -274,3 +274,153 @@ fn a_failing_pull_is_an_error_and_not_a_silent_success() {
     .unwrap_err();
     assert!(err.contains("does not exist"), "the reason survives: {err}");
 }
+
+// --- r29 Task 1: a format is what the repo declares -------------------------
+//
+// `.safetensors` is a CONTAINER. What is inside it -- bf16, FP8, AWQ, GPTQ,
+// INT4 -- is declared in `config.json`, and reading the extension instead
+// reported every quantised repo on Hugging Face as bf16 needing a conversion.
+//
+// Found by pulling `mconcat/Qwen3.5-27B-Claude-4.6-Opus-Reasoning-Distilled-
+// FP8-Dynamic` on 2026-09-11, which answered "publishes only bf16 safetensors"
+// about a model quantised to 8 bits with vLLM's own llm-compressor. A stock
+// vLLM loads that repo directly; harmony refused it for a conversion that was
+// never needed.
+
+use llm_harmony::inventory::artifact::Quant;
+
+fn compressed_tensors_repo() -> serde_json::Value {
+    json(
+        r#"{"id":"mconcat/Qwen3.5-27B-FP8-Dynamic",
+            "siblings":[{"rfilename":"model.safetensors","size":15000000000},
+                        {"rfilename":"config.json"},{"rfilename":"recipe.yaml"}],
+            "config":{"quantization_config":{
+                "format":"float-quantized",
+                "quant_method":"compressed-tensors",
+                "config_groups":{"group_0":{"weights":{"num_bits":8}}}}}}"#,
+    )
+}
+
+#[test]
+fn a_compressed_tensors_repo_is_not_reported_as_bf16() {
+    let repo = hf::repo_from_json(&compressed_tensors_repo()).unwrap();
+    let weights = repo.files.iter().find(|f| f.name.ends_with(".safetensors")).unwrap();
+    assert_eq!(weights.format, Format::Safetensors(Quant::CompressedTensors));
+    assert_ne!(weights.format, Format::Safetensors(Quant::Bf16));
+    // It DOES need converting -- on this machine, where no provider loads
+    // safetensors. That is a fact about the providers, not about the repo,
+    // and `formats()` is what settles it per provider (r29 Task 2). What
+    // changed here is the reason: a convertible quantised source, rather
+    // than a bf16 file it never was.
+    assert!(repo.needs_conversion());
+    assert!(matches!(weights.format, Format::Safetensors(q) if q.is_convertible()));
+}
+
+#[test]
+fn awq_and_gptq_are_read_from_the_declaration_too() {
+    for (method, want) in [("awq", Quant::Awq), ("gptq", Quant::Gptq),
+                           ("fp8", Quant::Fp8), ("bitsandbytes", Quant::BitsAndBytes)] {
+        let v = json(&format!(
+            r#"{{"id":"x/y","siblings":[{{"rfilename":"model.safetensors","size":1}}],
+                 "config":{{"quantization_config":{{"quant_method":"{method}"}}}}}}"#
+        ));
+        let repo = hf::repo_from_json(&v).unwrap();
+        assert_eq!(repo.files[0].format, Format::Safetensors(want), "{method}");
+    }
+}
+
+/// No extra request: `GET /api/models/{id}?blobs=true` already returns
+/// `config`, and `repo_from_json` was parsing that very response and keeping
+/// only the file list.
+#[test]
+fn the_declaration_is_read_from_the_response_already_fetched() {
+    let repo = hf::repo_from_json(&compressed_tensors_repo()).unwrap();
+    assert_eq!(repo.quant_method.as_deref(), Some("compressed-tensors"));
+    assert_eq!(repo.quant_bits, Some(8));
+}
+
+/// A repo that declares nothing quantised IS bf16, and the old answer was
+/// right for it. The fix must not make the common case worse.
+#[test]
+fn a_repo_with_no_quantization_config_is_still_bf16() {
+    let v = json(r#"{"id":"x/y","siblings":[{"rfilename":"model.safetensors","size":1}]}"#);
+    let repo = hf::repo_from_json(&v).unwrap();
+    assert_eq!(repo.files[0].format, Format::Safetensors(Quant::Bf16));
+    assert!(repo.needs_conversion(), "bf16 still needs one");
+}
+
+/// A declaration this build does not recognise is `Unknown`, never bf16.
+/// Guessing "probably bf16" is how a 55 GB dequantisation gets planned for a
+/// file that was never 16-bit.
+#[test]
+fn an_unrecognised_quant_method_is_unknown_rather_than_assumed() {
+    let v = json(
+        r#"{"id":"x/y","siblings":[{"rfilename":"model.safetensors","size":1}],
+            "config":{"quantization_config":{"quant_method":"some-new-thing"}}}"#,
+    );
+    let repo = hf::repo_from_json(&v).unwrap();
+    assert_eq!(repo.files[0].format, Format::Safetensors(Quant::Unknown));
+    // The raw declaration survives, so a refusal can name what it saw.
+    assert_eq!(repo.quant_method.as_deref(), Some("some-new-thing"));
+    assert!(!repo.needs_conversion(), "harmony does not know it is convertible either");
+}
+
+/// A GGUF repo is unaffected by any of this.
+#[test]
+fn a_gguf_repo_is_still_a_gguf_repo() {
+    let v = json(
+        r#"{"id":"x/y-GGUF","siblings":[{"rfilename":"y-Q4_K_M.gguf","size":1}],
+            "config":{"quantization_config":{"quant_method":"awq"}}}"#,
+    );
+    let repo = hf::repo_from_json(&v).unwrap();
+    assert_eq!(repo.files[0].format, Format::Gguf);
+    assert!(repo.has_loadable_build());
+}
+
+/// MLX on Hugging Face is **safetensors**, not `.npz`.
+///
+/// `Format::from_path_str` only ever produces `Mlx` for a `.npz`, which is the
+/// old format nobody publishes any more. Every current MLX repo ships
+/// `model-0000N-of-0000M.safetensors` and declares itself with
+/// `library_name: "mlx"` — so intake classified all of them as PyTorch
+/// safetensors and could not pull a single MLX model, on a machine where two
+/// of four providers serve MLX natively.
+///
+/// Found 2026-09-11 reading `Jackrong/MLX-Qwen3.5-27B-…-4bit`, whose files are
+/// safetensors and whose `library_name` says what they are.
+#[test]
+fn an_mlx_repo_is_mlx_however_its_files_are_named() {
+    let v = json(
+        r#"{"id":"Jackrong/MLX-Qwen3.5-27B-4bit","library_name":"mlx","tags":["mlx"],
+            "siblings":[{"rfilename":"model-00001-of-00003.safetensors","size":5000000000},
+                        {"rfilename":"model-00002-of-00003.safetensors","size":5000000000}],
+            "config":{"quantization_config":{"bits":4}}}"#,
+    );
+    let repo = hf::repo_from_json(&v).unwrap();
+    assert!(repo.files.iter().all(|f| f.format == Format::Mlx), "{:?}", repo.files);
+    assert!(repo.has_loadable_build(), "two of four providers serve this natively");
+    assert!(!repo.needs_conversion());
+}
+
+/// The tag alone is enough where `library_name` is absent — HF sets one or
+/// both, and a repo that says `mlx` in either place is saying it.
+#[test]
+fn an_mlx_tag_is_read_when_library_name_is_missing() {
+    let v = json(
+        r#"{"id":"x/y","tags":["mlx","text-generation"],
+            "siblings":[{"rfilename":"model.safetensors","size":1}]}"#,
+    );
+    assert_eq!(hf::repo_from_json(&v).unwrap().files[0].format, Format::Mlx);
+}
+
+/// And a GGUF file in an MLX-tagged repo is still a GGUF file. The library
+/// declaration resolves what a safetensors container holds; it does not
+/// overrule an extension that is already unambiguous.
+#[test]
+fn an_unambiguous_extension_is_not_overruled_by_the_library_tag() {
+    let v = json(
+        r#"{"id":"x/y","library_name":"mlx",
+            "siblings":[{"rfilename":"y-Q4_K_M.gguf","size":1}]}"#,
+    );
+    assert_eq!(hf::repo_from_json(&v).unwrap().files[0].format, Format::Gguf);
+}
