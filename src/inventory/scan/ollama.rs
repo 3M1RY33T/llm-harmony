@@ -38,8 +38,8 @@ impl StoreScanner for OllamaStore {
         Store::Ollama
     }
 
-    fn root(&self) -> Option<PathBuf> {
-        Some(home()?.join(".ollama/models"))
+    fn roots(&self) -> Vec<PathBuf> {
+        home().map(|h| vec![h.join(".ollama/models")]).unwrap_or_default()
     }
 
     /// One artifact per tag, each pointing at the blob it references. Two tags

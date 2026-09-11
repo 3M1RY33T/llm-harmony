@@ -33,10 +33,17 @@ pub struct Resident {
     pub model: String,
     /// What it is costing, by the same ladder admission uses.
     pub estimated_bytes: u64,
-    /// Unix seconds, for LRU. Providers that publish nothing get the time
-    /// harmony first saw them resident: worse than a real figure, better than
-    /// an arbitrary order.
-    pub last_used: u64,
+    /// Eviction order: **lower goes first**.
+    ///
+    /// Ollama supplies its `expires_at`, which it moves forward on every use,
+    /// so among Ollama's own models this really is least-recently-used. The
+    /// other three publish nothing comparable and get 0, which leaves their
+    /// order the ledger's own.
+    ///
+    /// Deliberately not called `last_used`: an expiry is not a last-use time,
+    /// and two models loaded with different `keep_alive` values are not
+    /// comparable by it. It ranks; it does not measure.
+    pub evict_rank: u64,
     /// Observed to be serving a request. `false` also covers "could not tell" --
     /// see the module docs.
     pub busy: bool,
@@ -270,9 +277,9 @@ fn victims_for<'a>(
         eligible.push(r);
     }
 
-    // Least recently used first: the model nobody has touched is the one whose
-    // eviction costs least.
-    eligible.sort_by_key(|r| r.last_used);
+    // Lowest rank first: where the provider gives a real signal this is the
+    // model nobody has touched, and where it does not it is ledger order.
+    eligible.sort_by_key(|r| r.evict_rank);
 
     let mut taken: Vec<&Resident> = Vec::new();
     let mut freed: u64 = 0;
@@ -350,7 +357,7 @@ mod tests {
             provider: ProviderKind::LmStudio,
             model: model.to_string(),
             estimated_bytes: bytes,
-            last_used,
+            evict_rank: last_used,
             busy: false,
             actuation: Actuation::ModelLevel,
         }
@@ -673,6 +680,35 @@ mod tests {
                     &a[0],
                     Action::Unload { model, reason: UnloadReason::Named, .. } if model == "a"
                 ));
+            }
+            p => panic!("{p:?}"),
+        }
+    }
+
+    /// Ollama's expiry moves forward on every use, so the model expiring
+    /// soonest is the one least recently touched.
+    #[test]
+    fn a_provider_that_publishes_an_expiry_orders_by_it() {
+        // `stale` expires sooner, so it is the one that goes.
+        let residents = vec![res("fresh", 5 * GB, 9_000), res("stale", 5 * GB, 1_000)];
+        match plan(
+            &candidates("wanted"),
+            &residents,
+            &Pins::empty(),
+            &measured(4 * GB),
+            &machine(3 * GB),
+            0,
+            &req("wanted"),
+        ) {
+            Plan::Actions(a) => {
+                let unloads: Vec<&str> = a
+                    .iter()
+                    .filter_map(|x| match x {
+                        Action::Unload { model, .. } => Some(model.as_str()),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(unloads, vec!["stale"]);
             }
             p => panic!("{p:?}"),
         }

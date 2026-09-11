@@ -10,8 +10,18 @@ impl StoreScanner for LmStudioStore {
         Store::LmStudio
     }
 
-    fn root(&self) -> Option<PathBuf> {
-        Some(home()?.join(".lmstudio/models"))
+    /// Two, and the second is not optional.
+    ///
+    /// `text-embedding-nomic-embed-text-v1.5` is served by LM Studio and lives
+    /// under `.internal/bundled-models`, which nothing scanned until
+    /// 2026-09-11 -- so the ledger could see the provider serving a model it
+    /// could find no artifact for, and refused to price it.
+    fn roots(&self) -> Vec<PathBuf> {
+        let Some(h) = home() else { return Vec::new() };
+        vec![
+            h.join(".lmstudio/models"),
+            h.join(".lmstudio/.internal/bundled-models"),
+        ]
     }
 
     /// Layout is `{publisher}/{repo}/...`, so the hint is the first two

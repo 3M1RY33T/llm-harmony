@@ -64,6 +64,8 @@ impl Adapter for Vllm {
                         .as_f64()
                         .map(|g| (g * GIB) as u64),
                     // The manager publishes the model directory outright.
+                    expires_at_unix: None,
+                    model_type: None,
                     artifact_path: m["source"].as_str().map(str::to_string),
                 })
             })

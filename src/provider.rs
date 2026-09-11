@@ -74,6 +74,24 @@ pub struct LoadedModel {
     pub state: State,
     pub context_tokens: Option<u32>,
     pub weights_bytes: Option<u64>,
+    /// When the provider intends to drop this model, as a unix timestamp.
+    ///
+    /// Ollama publishes `expires_at` on `/api/ps` and moves it forward on
+    /// every use, which makes it the only ordering signal any of the four
+    /// gives for "least recently used". It is an expiry, not a last-use time --
+    /// two models with different `keep_alive` values are not comparable by
+    /// it -- so it ranks eviction order and is never called a last-use.
+    pub expires_at_unix: Option<u64>,
+
+    /// What kind of model this is, as the provider classifies it.
+    ///
+    /// Only LM Studio publishes one (`llm`, `vlm`, `embeddings`), and it is
+    /// carried because the served id depends on it: an embedding model is
+    /// served as `text-embedding-<repo>` while its directory is just `<repo>`.
+    /// Matching that on name shape alone would be a guess; this makes it a
+    /// lookup.
+    pub model_type: Option<String>,
+
     /// Where the weights live, when the provider says so.
     ///
     /// This is the identity placement keys on. Names differ across providers
@@ -92,6 +110,8 @@ impl LoadedModel {
             state: State::NotLoaded,
             context_tokens: None,
             weights_bytes: None,
+            expires_at_unix: None,
+            model_type: None,
             artifact_path: None,
         }
     }

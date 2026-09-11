@@ -1,8 +1,23 @@
-//! Watching a load happen, so the guarantee does not rest on the prediction.
+//! Watching a load, so the guarantee does not rest on the prediction.
 //!
 //! Admission decides whether a model *should* fit. This decides whether it
-//! *is* fitting, from the machine rather than from the artifact, and it is the
-//! only part of the slice that can be right when the estimator is wrong.
+//! *did*, from the machine rather than from the artifact, and it is the only
+//! part of the slice that can be right when the estimator is wrong.
+//!
+//! ## What this cannot do
+//!
+//! It cannot prevent the spike. Measured 2026-09-11: `lms load` and Ollama's
+//! keep-alive request both **block until the model is resident**, so by the
+//! time this code runs its first poll the memory is already committed. A
+//! `--floor` set far above free memory did not stop a load, because residency
+//! won the race before the limits were ever checked.
+//!
+//! Nothing here could change that — harmony does not own the allocation and
+//! cannot interrupt another process mid-`malloc`. **Admission is the
+//! prevention; this is the damage limit.** What it does guarantee is that
+//! harmony will not *leave* the machine in a state its own load created:
+//! [`check_after`] re-reads the machine once the load returns, and a load that
+//! pushed it past the floor is undone.
 //!
 //! It samples through injected closures so the failure paths are testable
 //! without allocating nine gigabytes. And it only ever *decides*: the caller
@@ -55,6 +70,30 @@ pub enum Outcome {
     /// Never became resident. Not necessarily a failure of the provider --
     /// but not a success either, and the caller must not report one.
     TimedOut,
+}
+
+/// The verdict on a machine that has just finished a load.
+///
+/// Separate from [`supervise`] because it is the case that actually fires: a
+/// synchronous load is already done when harmony looks, so the decision is
+/// "is the machine in trouble *now*", not "is it heading there".
+pub fn check_after(limits: &Limits, baseline_swap: u64, m: &Machine) -> Option<String> {
+    let free = m.total_bytes.saturating_sub(m.used_bytes);
+    if free < limits.floor_bytes {
+        return Some(format!(
+            "the load left {} free, below the {} floor",
+            crate::render::human_bytes(free),
+            crate::render::human_bytes(limits.floor_bytes)
+        ));
+    }
+    let growth = m.swap_used_bytes.saturating_sub(baseline_swap);
+    if growth > limits.max_swap_growth_bytes {
+        return Some(format!(
+            "the load grew swap by {}; the machine is paging",
+            crate::render::human_bytes(growth)
+        ));
+    }
+    None
 }
 
 /// Watch a load that is already under way.
@@ -211,5 +250,27 @@ mod tests {
     fn residency_is_checked_before_the_pressure_limits() {
         let out = supervise(&limits(), stepper(vec![free(1)]), after_n_polls(1));
         assert!(matches!(out, Outcome::Loaded { .. }), "{out:?}");
+    }
+
+    /// The case that actually fires. A synchronous load is finished before
+    /// harmony looks, so the question is whether the machine is in trouble
+    /// now -- and if it is, the load that caused it gets undone.
+    #[test]
+    fn a_load_that_left_the_machine_below_the_floor_is_reported() {
+        let reason = check_after(&limits(), 0, &free(1)).expect("below a 4 GB floor");
+        assert!(reason.contains("below"), "{reason}");
+    }
+
+    #[test]
+    fn a_load_that_left_room_is_not_reported() {
+        assert!(check_after(&limits(), 0, &free(12)).is_none());
+    }
+
+    /// Growth against the baseline taken before the load, so a machine that
+    /// was already paging is not blamed on this load.
+    #[test]
+    fn swap_that_grew_during_the_load_is_reported_but_standing_swap_is_not() {
+        assert!(check_after(&limits(), 0, &swap(4)).is_some());
+        assert!(check_after(&limits(), 4 * GB, &swap(4)).is_none());
     }
 }

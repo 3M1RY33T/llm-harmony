@@ -20,8 +20,8 @@ impl StoreScanner for HfCache {
         Store::HfCache
     }
 
-    fn root(&self) -> Option<PathBuf> {
-        Some(home()?.join(".cache/huggingface/hub"))
+    fn roots(&self) -> Vec<PathBuf> {
+        home().map(|h| vec![h.join(".cache/huggingface/hub")]).unwrap_or_default()
     }
 
     fn scan(&self, root: &Path) -> Vec<Artifact> {

@@ -147,6 +147,8 @@ mod tests {
             state,
             context_tokens: ctx,
             weights_bytes: None,
+            expires_at_unix: None,
+            model_type: None,
             artifact_path: None,
         }
     }

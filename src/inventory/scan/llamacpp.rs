@@ -10,8 +10,8 @@ impl StoreScanner for LlamaCppPool {
         Store::LlamaCpp
     }
 
-    fn root(&self) -> Option<PathBuf> {
-        Some(home()?.join(".llamacpp/models"))
+    fn roots(&self) -> Vec<PathBuf> {
+        home().map(|h| vec![h.join(".llamacpp/models")]).unwrap_or_default()
     }
 
     /// A flat pool of mixed real files and symlinks into other stores. The

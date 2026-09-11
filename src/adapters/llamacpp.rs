@@ -75,6 +75,8 @@ impl Adapter for LlamaCpp {
                     // No size either. The path below is what lets the disk
                     // ledger supply one.
                     weights_bytes: None,
+                    expires_at_unix: None,
+                    model_type: None,
                     artifact_path: model_arg(m),
                 })
             })

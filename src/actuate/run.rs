@@ -114,9 +114,9 @@ impl Report {
 
 /// Every resident model, as the planner needs to see it.
 ///
-/// `last_used` is zero for all of them: no provider publishes a last-use time,
-/// so LRU degrades to the ledger's own order. Recorded here rather than hidden,
-/// because it means "least recently used" is currently "first seen".
+/// `evict_rank` comes from Ollama's `expires_at` where it exists -- the only
+/// ordering signal any of the four publishes -- and is 0 everywhere else,
+/// which leaves those providers in ledger order.
 pub fn residents(ledger: &Ledger, http: &Http) -> Vec<Resident> {
     let mut out = Vec::new();
     for row in &ledger.rows {
@@ -137,7 +137,7 @@ pub fn residents(ledger: &Ledger, http: &Http) -> Vec<Resident> {
                 provider: row.kind,
                 model: m.id.clone(),
                 estimated_bytes,
-                last_used: 0,
+                evict_rank: m.expires_at_unix.unwrap_or(0),
                 // An Err means the provider could not say. See the module docs
                 // on `actuate::plan` for why that is not treated as busy.
                 busy: adapter.busy(http, &row.url, &m.id).unwrap_or(false),
@@ -290,6 +290,9 @@ fn execute(
                         .unwrap_or(options.reserve_bytes / 2),
                     ..Limits::from_reserve(options.reserve_bytes)
                 };
+                // Taken before the load so that swap already in use is not
+                // blamed on it.
+                let baseline_swap = Machine::read().map(|m| m.swap_used_bytes).unwrap_or(0);
                 let outcome = watchdog::supervise(
                     &limits,
                     || Machine::read().unwrap_or(Machine::zero()),
@@ -298,6 +301,17 @@ fn execute(
 
                 match outcome {
                     watchdog::Outcome::Loaded { took_s } => {
+                        // The check that actually fires. Both load verbs block
+                        // until the model is resident, so the spike is over
+                        // before harmony gets to look -- but leaving the
+                        // machine in it is a choice, and this is where it is
+                        // declined.
+                        let after = Machine::read().unwrap_or(Machine::zero());
+                        if let Some(reason) = watchdog::check_after(&limits, baseline_swap, &after)
+                        {
+                            let _ = adapter.unload(http, &url, &model);
+                            return finish(verb, Status::Aborted { reason }, unloaded, estimate);
+                        }
                         if options.pin_after {
                             pin(provider, &model);
                         }

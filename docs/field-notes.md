@@ -159,12 +159,43 @@ looks half empty, and the refusal has to explain itself.
 **`unload` round-trips.** `llm-harmony unload nomic-embed-text:latest` reports
 the unload and exits 0; `status` then shows Ollama at zero resident.
 
-**Not yet verified, and honestly so:** a *successful* load, a cross-provider
-switch, and a watchdog abort. All three need headroom this machine does not
-currently have — 4.2 GB free with 4.5 GB of swap already in use, against a
-smallest priceable model of 10.4 GB. They need a calm machine, which is the
-same precondition the corpus needs before it can hold a trustworthy
-measurement.
+**Verified 2026-09-11, once the resolve-layer gaps were closed** and two small
+models could be priced:
+
+```
+$ llm-harmony load nomic-embed-text:latest --provider ollama --context 2048 --reserve 0
+  ready      nomic-embed-text:latest on ollama
+
+$ llm-harmony switch nomic-embed-text:latest text-embedding-nomic-embed-text-v1.5 --reserve 0
+  unloaded   nomic-embed-text:latest on ollama
+  ready      text-embedding-nomic-embed-text-v1.5 on lmstudio
+```
+
+`status` then reports lmstudio 1, ollama 0. A cross-provider switch is real.
+
+### The watchdog cannot prevent a spike, only refuse to sit in one
+
+Measured 2026-09-11, and it corrected a claim this document had already made.
+
+`lms load` and Ollama's keep-alive request **both block until the model is
+resident**. So by the time the supervising loop takes its first sample, the
+allocation is already done — and since residency is checked before the pressure
+limits, it returns `Loaded` without ever looking at them. Proof: a load with
+`--floor 20G` against 4.6 GB free reported `ready`.
+
+Nothing could change that. Harmony does not own the allocation and cannot
+interrupt another process mid-`malloc`. **Admission is the prevention; the
+watchdog is the damage limit.** What it can do — and now does — is re-read the
+machine after the load returns and undo a load that left it in trouble:
+
+```
+$ llm-harmony load text-embedding-... --floor 21474836480
+  aborted    the load left 4.5G free, below the 20.0G floor
+             the load was undone; nothing new is resident
+```
+
+The in-flight loop is kept for the case where a provider ever returns before
+residency completes, but on these four it is the post-load check that fires.
 
 ### Loading an already-loaded model doubles it
 

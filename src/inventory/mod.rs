@@ -87,9 +87,8 @@ impl Inventory {
                 .collect(),
             None => scanners()
                 .into_iter()
-                .flat_map(|s| match s.root() {
-                    Some(r) => s.scan(&r),
-                    None => Vec::new(),
+                .flat_map(|s| {
+                    s.roots().iter().flat_map(|r| s.scan(r)).collect::<Vec<_>>()
                 })
                 .collect(),
         };

@@ -1592,6 +1592,8 @@ git commit -m "verify actuation against the machine, and record what it cost"
 
 ## Follow-ups found while building this
 
+**All three closed 2026-09-11**, on branch `slice-5-gaps`. Kept for the record of what was wrong and why.
+
 - **Ollama candidates carry no artifact.** `resolve::identity::candidates` returns an Ollama candidate with `artifact: None`, so no shape can be read and every Ollama model prices as a `Declared` floor — which this slice refuses to admit on. The digest → `blobs/sha256-*` link that slice 2's scanner indexes is not reaching the candidate. A resolve-layer gap, not an actuation one, and the reason `llm-harmony load <ollama-model>` currently refuses.
 - **LM Studio's own-managed models are invisible to the disk ledger.** `text-embedding-nomic-embed-text-v1.5` is served by LM Studio and stored outside `~/.lmstudio/models`, so nothing on disk matches it. Same consequence: no shape, no computed figure, refused.
 - **`last_used` is always zero.** No provider publishes a last-use time, so LRU eviction currently degrades to the ledger's own order. Ollama's `/api/ps` carries `expires_at`, which shifts on use and would be a usable proxy.

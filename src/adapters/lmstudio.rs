@@ -58,6 +58,8 @@ impl Adapter for LmStudio {
                     // quantization and state, and nothing that locates the
                     // file. Verified live 2026-09-10. Placement bridges this
                     // provider by name and marks the result inferred.
+                    expires_at_unix: None,
+                    model_type: m["type"].as_str().map(str::to_string),
                     artifact_path: None,
                 })
             })

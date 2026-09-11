@@ -47,8 +47,8 @@ impl StoreScanner for VllmStore {
         Store::Vllm
     }
 
-    fn root(&self) -> Option<PathBuf> {
-        Some(home()?.join(".vllm-mlx"))
+    fn roots(&self) -> Vec<PathBuf> {
+        home().map(|h| vec![h.join(".vllm-mlx")]).unwrap_or_default()
     }
 
     /// Scans `models/` only. The store root also contains `venv/`, `serve`,

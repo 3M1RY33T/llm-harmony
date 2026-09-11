@@ -52,6 +52,8 @@ impl Adapter for Ollama {
                 // /api/ps carries a digest, not a path. The blob it names is
                 // resolvable, but only through slice 2's scanner, which owns
                 // the blobs directory layout.
+                expires_at_unix: None,
+                model_type: None,
                 artifact_path: None,
             });
         }
@@ -74,6 +76,8 @@ impl Adapter for Ollama {
                     state: State::NotLoaded,
                     context_tokens: None,
                     weights_bytes: m["size"].as_u64(),
+                    expires_at_unix: None,
+                    model_type: None,
                     artifact_path: None,
                 });
             }
@@ -184,5 +188,88 @@ impl Ollama {
         http.post_json(&format!("{base}{path}"), &body)
             .map(|_| ())
             .map_err(|e| crate::provider::ActuateError::Failed { reason: e.to_string() })
+    }
+}
+
+/// `2026-09-11T01:10:00.952437-04:00` -> unix seconds.
+///
+/// Hand-rolled rather than pulling in a date crate, for the same reason the
+/// GGUF header reader is: one well-understood function is cheaper to own than
+/// a dependency, and this parses exactly one shape from exactly one producer.
+/// Anything it does not recognise is `None` -- a wrong timestamp would reorder
+/// evictions silently, which is worse than having no ordering at all.
+fn parse_rfc3339(s: &str) -> Option<u64> {
+    let bytes = s.as_bytes();
+    if bytes.len() < 19 || bytes[4] != b'-' || bytes[7] != b'-' || bytes[10] != b'T' {
+        return None;
+    }
+    let num = |a: usize, b: usize| s.get(a..b)?.parse::<i64>().ok();
+
+    let (y, mo, d) = (num(0, 4)?, num(5, 7)?, num(8, 10)?);
+    let (h, mi, sec) = (num(11, 13)?, num(14, 16)?, num(17, 19)?);
+    if !(1..=12).contains(&mo) || !(1..=31).contains(&d) || h > 23 || mi > 59 || sec > 60 {
+        return None;
+    }
+
+    // Everything after the seconds is an optional fraction then the offset.
+    let rest = &s[19..];
+    let rest = match rest.find(['Z', '+', '-']) {
+        Some(i) => &rest[i..],
+        None => return None,
+    };
+    let offset_seconds = if rest.starts_with('Z') {
+        0
+    } else {
+        let sign = if rest.starts_with('-') { -1 } else { 1 };
+        let oh: i64 = rest.get(1..3)?.parse().ok()?;
+        let om: i64 = rest.get(4..6)?.parse().ok()?;
+        sign * (oh * 3600 + om * 60)
+    };
+
+    let secs = days_from_civil(y, mo, d) * 86_400 + h * 3600 + mi * 60 + sec - offset_seconds;
+    u64::try_from(secs).ok()
+}
+
+/// Days since 1970-01-01 for a proleptic Gregorian date. Howard Hinnant's
+/// `days_from_civil`, which is the standard formulation of this.
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let mp = if m > 2 { m - 3 } else { m + 9 };
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+#[cfg(test)]
+mod timestamp_tests {
+    use super::*;
+
+    /// Reference values computed independently, not by this function.
+    #[test]
+    fn known_timestamps_round_trip() {
+        assert_eq!(parse_rfc3339("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(parse_rfc3339("2026-09-11T05:10:00Z"), Some(1_789_103_400));
+        assert_eq!(parse_rfc3339("2000-02-29T12:00:00+02:00"), Some(951_818_400));
+    }
+
+    /// The exact shape Ollama emits: fractional seconds and a negative offset.
+    /// Same instant as the Z form above.
+    #[test]
+    fn ollamas_own_format_parses_to_the_same_instant() {
+        assert_eq!(
+            parse_rfc3339("2026-09-11T01:10:00.952437-04:00"),
+            Some(1_789_103_400)
+        );
+    }
+
+    /// Anything unrecognised is None. A wrong timestamp would silently
+    /// reorder evictions, which is worse than having no ordering.
+    #[test]
+    fn unparseable_input_is_none_rather_than_a_guess() {
+        for bad in ["", "not a date", "2026-09-11", "2026-09-11T01:10:00", "2026-13-40T99:99:99Z"] {
+            assert_eq!(parse_rfc3339(bad), None, "{bad}");
+        }
     }
 }

@@ -156,6 +156,8 @@ mod tests {
             state: State::Loaded,
             context_tokens: Some(8192),
             weights_bytes: weights,
+            expires_at_unix: None,
+            model_type: None,
             artifact_path: None,
         }
     }

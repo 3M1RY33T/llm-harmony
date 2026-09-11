@@ -66,8 +66,18 @@ pub fn total_unique_bytes(artifacts: &[Artifact]) -> u64 {
 
 pub trait StoreScanner: Send + Sync {
     fn store(&self) -> Store;
-    /// Default root for this store, under `$HOME`.
-    fn root(&self) -> Option<PathBuf>;
+    /// Where this store keeps artifacts, under `$HOME`.
+    ///
+    /// A list because LM Studio has two: the models you install, and the ones
+    /// it ships with under `.internal/bundled-models`. Found 2026-09-11, when
+    /// a model LM Studio was serving turned out to exist nowhere the ledger
+    /// looked.
+    fn roots(&self) -> Vec<PathBuf>;
+
+    /// The first root, for callers that want one. `roots()` is the truth.
+    fn root(&self) -> Option<PathBuf> {
+        self.roots().into_iter().next()
+    }
     fn scan(&self, root: &Path) -> Vec<Artifact>;
 }
 
