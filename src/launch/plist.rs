@@ -101,6 +101,7 @@ mod tests {
             url: "http://127.0.0.1:8080".into(),
             start: start.map(str::to_string),
             launchd_label: None,
+            kv_dtype_bytes: None,
         }
     }
 

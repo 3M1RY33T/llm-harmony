@@ -18,6 +18,15 @@ pub struct ProviderConfig {
     /// `com.ollama.ollama` and LM Studio's own agent are already registered on
     /// this machine.
     pub launchd_label: Option<String>,
+    /// Bytes per KV cache element, when this provider was started with a
+    /// quantised cache.
+    ///
+    /// llama.cpp takes `-ctk`/`-ctv` and publishes nothing about the choice,
+    /// so harmony assumes f16 and over-estimates for anyone who quantised.
+    /// This is the place to say so -- and it is deliberately the only knob:
+    /// the alternative, shaving the safety margin until one machine's numbers
+    /// line up, is how under-prediction gets shipped.
+    pub kv_dtype_bytes: Option<u64>,
 }
 
 impl ProviderConfig {
@@ -49,6 +58,8 @@ struct RawProvider {
     start: Option<String>,
     #[serde(default)]
     launchd_label: Option<String>,
+    #[serde(default)]
+    kv_dtype_bytes: Option<u64>,
 }
 
 impl Config {
@@ -62,6 +73,7 @@ impl Config {
                     url: format!("http://127.0.0.1:{}", kind.default_port()),
                     start: None,
                     launchd_label: None,
+                    kv_dtype_bytes: None,
                 })
                 .collect(),
         }
@@ -82,6 +94,7 @@ impl Config {
                     url: p.url.trim_end_matches('/').to_string(),
                     start: p.start,
                     launchd_label: p.launchd_label,
+                    kv_dtype_bytes: p.kv_dtype_bytes,
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
@@ -220,5 +233,26 @@ mod tests {
         )
         .unwrap();
         assert_eq!(c.providers[0].url, "http://127.0.0.1:11434");
+    }
+
+    /// A quantised cache halves or quarters the term that dominates at long
+    /// windows. Absent, f16 is assumed -- the expensive case.
+    #[test]
+    fn a_provider_may_declare_a_quantised_kv_cache() {
+        let c = Config::from_toml(
+            r#"
+            [[provider]]
+            kind = "llamacpp"
+            url = "http://127.0.0.1:8080"
+            kv_dtype_bytes = 1
+            "#,
+        )
+        .unwrap();
+        assert_eq!(c.providers[0].kv_dtype_bytes, Some(1));
+    }
+
+    #[test]
+    fn a_provider_that_says_nothing_gets_no_override() {
+        assert!(Config::defaults().providers.iter().all(|p| p.kv_dtype_bytes.is_none()));
     }
 }

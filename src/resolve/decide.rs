@@ -81,8 +81,8 @@ pub fn decide(
     let headroom = free.saturating_sub(reserve_bytes);
 
     match (estimate.bytes, estimate.basis) {
-        (Some(bytes), Basis::Measured | Basis::Declared) if bytes <= headroom => ready(c, false),
-        (Some(bytes), Basis::Measured | Basis::Declared) => Decision::Deny {
+        (Some(bytes), Basis::Measured | Basis::Computed) if bytes <= headroom => ready(c, false),
+        (Some(bytes), Basis::Measured | Basis::Computed) => Decision::Deny {
             reason: format!(
                 "needs {} but only {} is available; nothing was unloaded",
                 crate::render::human_bytes(bytes),
@@ -90,11 +90,22 @@ pub fn decide(
             ),
             alternatives: alternatives(candidates, Some(c)),
         },
-        // design.md section 5: never invent a measurement. An unmeasured shape
-        // cannot be admitted, and it cannot be refused on memory grounds
-        // either -- so say which it is.
+        // A declared figure covers weights and nothing else -- every source
+        // that publishes one says so, and `lms --estimate-only` was measured
+        // flat across a 5x context change on 2026-09-10. Admitting on it is
+        // admitting on an under-estimate, which is the one failure that costs
+        // the machine. It is reported, never acted on.
+        (Some(_), Basis::Declared) => Decision::Deny {
+            reason: "only a declared figure is available, which covers weights \
+                     and not the cache that scales with the window"
+                .to_string(),
+            alternatives: alternatives(candidates, Some(c)),
+        },
+        // design.md section 5: never invent a measurement. A shape that could
+        // not even be read cannot be priced -- say which it is.
         _ => Decision::Deny {
-            reason: "this shape has never been measured, so it cannot be admitted".to_string(),
+            reason: "this shape could not be measured or computed, so it cannot be admitted"
+                .to_string(),
             alternatives: alternatives(candidates, Some(c)),
         },
     }
@@ -179,11 +190,16 @@ mod tests {
         }
     }
 
+    /// Unknown is now narrower than it was in slice 4: a shape that can be
+    /// read gets a computed figure, so reaching here means the artifact itself
+    /// could not be priced.
     #[test]
     fn an_unknown_estimate_is_denied_with_that_as_the_reason() {
         let c = vec![cand(ProviderKind::LlamaCpp, State::NotLoaded, true)];
         match decide(&c, &unknown(), &machine(20_000_000_000), 0) {
-            Decision::Deny { reason, .. } => assert!(reason.contains("never been measured"), "{reason}"),
+            Decision::Deny { reason, .. } => {
+                assert!(reason.contains("could not be measured or computed"), "{reason}")
+            }
             d => panic!("{d:?}"),
         }
     }
@@ -233,6 +249,59 @@ mod tests {
                 assert!(alternatives.is_empty());
                 assert!(reason.contains("no provider"), "{reason}");
             }
+            d => panic!("{d:?}"),
+        }
+    }
+
+    /// The live hazard this closes. A declared figure is weights-only by
+    /// construction -- vLLM's `memory_gb`, Ollama's `size`, a file's length on
+    /// disk, and `lms load --estimate-only` alike, all verified 2026-09-10.
+    /// Admitting on it is admitting on an under-estimate.
+    #[test]
+    fn a_declared_figure_is_never_admitted_on_its_own() {
+        let c = vec![cand(ProviderKind::LlamaCpp, State::NotLoaded, true)];
+        let declared = Estimate {
+            bytes: Some(2_000_000_000),
+            basis: Basis::Declared,
+            samples: 0,
+            spread_bytes: None,
+        };
+        match decide(&c, &declared, &machine(20_000_000_000), 0) {
+            Decision::Deny { reason, .. } => {
+                assert!(reason.contains("weights"), "say why it is not enough: {reason}")
+            }
+            d => panic!("a declared floor must not admit: {d:?}"),
+        }
+    }
+
+    #[test]
+    fn a_computed_estimate_that_fits_is_admitted() {
+        let c = vec![cand(ProviderKind::LlamaCpp, State::NotLoaded, true)];
+        let e = Estimate {
+            bytes: Some(2_000_000_000),
+            basis: Basis::Computed,
+            samples: 0,
+            spread_bytes: None,
+        };
+        match decide(&c, &e, &machine(20_000_000_000), 0) {
+            Decision::Ready { resident, .. } => assert!(!resident),
+            d => panic!("{d:?}"),
+        }
+    }
+
+    /// And a computed figure that does not fit refuses on the arithmetic,
+    /// not on provenance.
+    #[test]
+    fn a_computed_estimate_that_does_not_fit_is_denied_on_the_numbers() {
+        let c = vec![cand(ProviderKind::LlamaCpp, State::NotLoaded, true)];
+        let e = Estimate {
+            bytes: Some(9_000_000_000),
+            basis: Basis::Computed,
+            samples: 0,
+            spread_bytes: None,
+        };
+        match decide(&c, &e, &machine(3_000_000_000), 0) {
+            Decision::Deny { reason, .. } => assert!(reason.contains("only"), "{reason}"),
             d => panic!("{d:?}"),
         }
     }

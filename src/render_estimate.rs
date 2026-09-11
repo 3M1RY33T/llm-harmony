@@ -32,6 +32,21 @@ pub fn render_estimate(e: &Estimate, machine: &Machine, reserve: Option<u64>) ->
                 "  verdict    WOULD NOT FIT\n"
             });
         }
+        (Some(bytes), Basis::Computed) => {
+            out.push_str(&format!(
+                "  predicted  {:>9}   (computed from the artifact: weights + KV at this window)\n",
+                human_bytes(bytes)
+            ));
+            out.push_str(&format!(
+                "  headroom   {:>9}   ({} free \u{2212} {} reserve)\n",
+                human_bytes(headroom), human_bytes(free), human_bytes(reserve)
+            ));
+            out.push_str(if bytes <= headroom {
+                "  verdict    fits, on a computation \u{2014} bias-high, never observed\n"
+            } else {
+                "  verdict    WOULD NOT FIT\n"
+            });
+        }
         (Some(bytes), Basis::Measured) => {
             let spread = e
                 .spread_bytes

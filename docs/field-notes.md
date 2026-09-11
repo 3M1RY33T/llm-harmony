@@ -129,6 +129,48 @@ can account for but never act on"* — so the design survived; the table did not
 server, not by its presence in a README. `llm-harmony verify` prints the probed
 answer so this table never has to be trusted from memory again.
 
+### A measurement taken while swapping is not a measurement
+
+Found 2026-09-11, calibrating the computed estimator against the corpus. Every
+`loaded` observation this machine has recorded:
+
+| provider | ctx | footprint | phys | rss | swap in use |
+|---|---|---|---|---|---|
+| lmstudio | 40,960 | 9.61 G | 7.40 G | 9.31 G | **5.0 G** |
+| lmstudio | 40,960 | 9.61 G | 7.40 G | 9.31 G | **5.0 G** |
+| lmstudio | 40,960 | 9.60 G | 7.40 G | 9.10 G | **7.7 G** |
+| lmstudio | 40,960 | 9.64 G | 7.43 G | 9.22 G | **8.8 G** |
+
+Four samples, one shape, and **not one of them taken on a calm machine.**
+
+Read them against the artifact's own geometry — 40 layers, 8 kv heads, head_dim
+128, from its header — and the KV cache at 40,960 tokens should be **6.71 GB**
+on top of 9.00 GB of weights. The observations report a total of 9.6 GB. That
+is a cache of approximately zero at a 40k window, which is not physically
+possible.
+
+The most likely reading is that the figure is depressed rather than the formula
+inflated: a resident-set reading taken while the machine is paging records what
+survived eviction, not what the model asked for.
+
+**Consequence, and it inverts a ranking.** `design.md` §5 puts measured above
+computed, which is right in general and wrong for a measurement taken under
+pressure: a systematically depressed number would outrank a bias-high one, for
+the single failure that costs the machine. So an observation with more than
+1 GiB of swap in use is no longer a measurement — `estimator::is_trustworthy`
+drops it, and the shape falls through to the computed rung.
+
+On this machine that disqualifies the entire corpus. That is the honest state:
+**there is currently no trustworthy measurement of any model here**, and the
+`--record` path will only produce one on a calm machine.
+
+**The margin was deliberately not tuned.** Computed comes in at 16.97 GB
+against the 9.00 GB "measurement", 1.88×. Closing that gap by shaving the
+margin would have been fitting the formula to a number already known to be
+wrong — which is precisely how under-prediction gets shipped. The one knob
+added instead is `kv_dtype_bytes` per provider, for anyone actually running a
+quantised cache.
+
 ### A GGUF metadata block is megabytes, and the tokenizer is nearly all of it
 
 Measured 2026-09-11 while building the shape reader, on

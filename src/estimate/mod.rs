@@ -1,3 +1,4 @@
+pub mod computed;
 pub mod attribute;
 pub mod corpus;
 pub mod estimator;
@@ -51,6 +52,14 @@ pub mod fixtures {
     /// Two resident models: attributable is false and nothing may be inferred.
     pub fn two_loaded(model: &str, ctx: u32, bytes: u64) -> Observation {
         base(model, ctx, 2, false, vec![sample(1, bytes / 2), sample(2, bytes / 2)])
+    }
+
+    /// The same reading, taken while the machine was paging. Not a
+    /// measurement: see `estimator::TRUSTWORTHY_SWAP_CEILING_BYTES`.
+    pub fn while_swapping(model: &str, ctx: u32, bytes: u64, swap: u64) -> Observation {
+        let mut o = loaded(model, ctx, bytes);
+        o.swap_used_bytes = swap;
+        o
     }
 
     pub fn idle() -> Observation {

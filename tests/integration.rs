@@ -15,7 +15,7 @@ fn fixture(name: &str) -> String {
 /// A provider entry with no launch configuration -- the shape every test here
 /// wants, since none of them start anything.
 fn provider(kind: ProviderKind, url: String) -> ProviderConfig {
-    ProviderConfig { kind, url, start: None, launchd_label: None }
+    ProviderConfig { kind, url, start: None, launchd_label: None, kv_dtype_bytes: None }
 }
 
 fn tree(pids: Vec<u32>, bytes: Option<u64>) -> ProcessTree {

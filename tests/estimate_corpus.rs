@@ -35,3 +35,63 @@ fn records_from_an_older_schema_are_dropped() {
 fn a_missing_corpus_is_empty_not_an_error() {
     assert!(corpus::load(std::path::Path::new("/nonexistent/observations.jsonl")).is_empty());
 }
+
+/// The safety property the whole slice rests on: for any shape that has a
+/// trustworthy measurement, the computed basis must not come in **below** it.
+/// Under-prediction is the failure that wedges the machine; over-prediction
+/// only wastes room.
+///
+/// Ratio on the one shape this machine has data for, measured 2026-09-11:
+/// computed 16.97 GB against a measured 9.00 GB, **1.88x**. That gap is not
+/// evidence the formula is wrong -- every observation behind the 9.00 GB was
+/// taken with 5.0-8.8 GB of swap in use, and now fails `is_trustworthy`. The
+/// margin was deliberately NOT tuned to close it. See the module docs on
+/// `TRUSTWORTHY_SWAP_CEILING_BYTES`.
+#[test]
+fn computed_never_under_predicts_a_trustworthy_measurement() {
+    use llm_harmony::estimate::computed::{computed, KV_DTYPE_BYTES};
+    use llm_harmony::estimate::estimator;
+    use llm_harmony::estimate::shape::ModelShape;
+
+    // The real geometry of this machine's 14B, read from its own header.
+    let shape = ModelShape {
+        arch: "qwen3".into(),
+        n_layers: 40,
+        n_kv_heads: 8,
+        head_dim: 128,
+        weights_bytes: 9_004_072_960,
+        trained_context: Some(40_960),
+    };
+
+    let calm = V2.replace(r#""swap_used_bytes":5100000000"#, r#""swap_used_bytes":0"#);
+    let t = Tree::new("corpus-safety");
+    let p = t.write("observations.jsonl", &format!("{calm}\n"));
+    let obs = corpus::load(&p);
+
+    let measured = estimator::for_model(&obs, "qwen3-14b", Some(40_960));
+    let m = measured.bytes.expect("the fixture measures this shape when calm");
+    let c = computed(&shape, 40_960, KV_DTYPE_BYTES)
+        .bytes
+        .expect("a shape that parsed is a shape that can be priced");
+
+    assert!(
+        c >= m,
+        "computed {c} is below measured {m}: the estimator would admit a load the \
+         machine has already been observed unable to hold"
+    );
+}
+
+/// And the corpus this machine actually has contains no trustworthy
+/// measurement at all -- every line was recorded while paging. Kept as a test
+/// so the day that stops being true is visible.
+#[test]
+fn every_observation_in_the_shipped_fixture_was_taken_under_pressure() {
+    let t = Tree::new("corpus-pressure");
+    let p = t.write("observations.jsonl", &format!("{V2}\n"));
+    let obs = corpus::load(&p);
+    assert!(!obs.is_empty(), "the fixture parses");
+    assert!(
+        obs.iter().all(|o| !llm_harmony::estimate::estimator::is_trustworthy(o)),
+        "the fixture was captured at 5.1 GB of swap, like every real observation"
+    );
+}

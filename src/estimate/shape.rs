@@ -295,12 +295,22 @@ pub fn from_mlx_config(dir: &Path) -> Option<ModelShape> {
     let n_kv_heads = c.num_key_value_heads.unwrap_or(n_heads);
     let head_dim = head_dim(c.head_dim, c.hidden_size, n_heads)?;
 
+    // A config beside no weights is a config, not a model. Returning a shape
+    // with `weights_bytes: 0` would price a 9 GB artifact at the size of its
+    // KV cache alone -- confidently, and an order of magnitude low. Found
+    // 2026-09-11 when an LM Studio candidate resolved to the `config.json`
+    // sitting next to a GGUF, and the estimate came back as 1.3 GB.
+    let weights_bytes = safetensors_bytes(dir);
+    if weights_bytes == 0 {
+        return None;
+    }
+
     Some(ModelShape {
         arch: c.model_type.unwrap_or_else(|| "unknown".to_string()),
         n_layers,
         n_kv_heads,
         head_dim,
-        weights_bytes: safetensors_bytes(dir),
+        weights_bytes,
         trained_context: c.max_position_embeddings,
     })
 }

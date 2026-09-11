@@ -247,6 +247,7 @@ fn an_mlx_config_without_head_dim_derives_it() {
         "config.json",
         r#"{"model_type":"llama","num_hidden_layers":32,"num_attention_heads":32,"hidden_size":4096}"#,
     );
+    t.file("model.safetensors", 2048);
     let s = shape::from_mlx_config(&t.root).unwrap();
     assert_eq!(s.head_dim, 128);
     assert_eq!(s.n_kv_heads, 32, "no GQA key means kv heads equal attention heads");
@@ -274,10 +275,10 @@ fn from_artifact_dispatches_on_what_the_path_is() {
         "config.json",
         r#"{"model_type":"qwen3","num_hidden_layers":40,"num_attention_heads":40,"hidden_size":5120}"#,
     );
+    let f = d.file("model.safetensors", 16);
     assert!(shape::from_artifact(&d.root).is_some(), "an mlx directory");
 
     // A safetensors file inside an MLX snapshot: the config is its sibling.
-    let f = d.file("model.safetensors", 16);
     assert!(shape::from_artifact(&f).is_some(), "a file beside a config");
 }
 
@@ -359,4 +360,17 @@ fn mlx_weights_are_sized_through_a_symlink() {
 
     let s = shape::from_mlx_config(&snap.root).unwrap();
     assert_eq!(s.weights_bytes, 8192, "the blob's size, not the link's");
+}
+
+/// A config beside no weights is a config, not a model. Returning a shape with
+/// `weights_bytes: 0` priced a 9 GB model at 1.3 GB -- the KV cache alone --
+/// when an LM Studio candidate resolved to the `config.json` next to a GGUF.
+#[test]
+fn a_config_with_no_weights_beside_it_is_not_a_model() {
+    let t = Tree::new("shape-weightless");
+    t.write(
+        "config.json",
+        r#"{"model_type":"qwen3","num_hidden_layers":40,"num_attention_heads":40,"hidden_size":5120}"#,
+    );
+    assert!(shape::from_mlx_config(&t.root).is_none());
 }

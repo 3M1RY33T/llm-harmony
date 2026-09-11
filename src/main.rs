@@ -176,6 +176,74 @@ fn pin_targets(
         .collect())
 }
 
+/// What a model costs, by the ladder in `design.md` section 5: measured, then
+/// computed, then a declared floor.
+///
+/// Shared by `estimate` and `resolve` so the two verbs can never disagree --
+/// the number one prints is the number the other admits on.
+#[allow(clippy::too_many_arguments)]
+fn estimate_for(
+    config: &Config,
+    ledger: &Ledger,
+    inventory: &llm_harmony::inventory::Inventory,
+    candidates: &[llm_harmony::resolve::identity::Candidate],
+    model: &str,
+    context: Option<u32>,
+    corpus: &[llm_harmony::record::Observation],
+) -> llm_harmony::estimate::estimator::Estimate {
+    // A declared floor beats a refusal when nothing has been measured.
+    // Provider figures first (vLLM-MLX publishes memory_gb, Ollama
+    // size), then the artifact's own size from the disk ledger.
+    let declared = candidates.iter().find_map(|c| {
+        ledger.rows.iter().find(|r| r.kind == c.provider).and_then(|r| {
+            match &r.outcome {
+                llm_harmony::ledger::Outcome::Ok(ms) => ms
+                    .iter()
+                    .find(|m| m.id == c.provider_model_id)
+                    .and_then(|m| m.weights_bytes),
+                _ => None,
+            }
+        }).or_else(|| {
+            c.artifact.as_ref().and_then(|id| {
+                inventory.artifacts.iter().find(|a| &a.id == id).map(|a| a.bytes)
+            })
+        })
+    });
+    // The computed rung: the artifact's own geometry, priced at the
+    // window that was asked for. Without `--context`, the model's
+    // trained window is used -- the same "worst case seen" convention
+    // `for_model` already applies to a `None` context, and the
+    // direction `design.md` section 8 requires being wrong in.
+    let computed = candidates
+        .iter()
+        .find_map(|c| {
+            let id = c.artifact.as_ref()?;
+            let a = inventory.weights_artifact(id)?;
+            let shape = llm_harmony::estimate::shape::from_artifact(&a.path)?;
+            let window = context.or(shape.trained_context)?;
+            // f16 unless this provider declared a quantised cache.
+            let kv_dtype = config
+                .providers
+                .iter()
+                .find(|p| p.kind == c.provider)
+                .and_then(|p| p.kv_dtype_bytes)
+                .unwrap_or(llm_harmony::estimate::computed::KV_DTYPE_BYTES);
+            Some(llm_harmony::estimate::computed::computed(&shape, window, kv_dtype))
+        })
+        .unwrap_or(llm_harmony::estimate::estimator::Estimate {
+            bytes: None,
+            basis: llm_harmony::estimate::estimator::Basis::Unknown,
+            samples: 0,
+            spread_bytes: None,
+        });
+
+    llm_harmony::estimate::estimator::ladder(
+        llm_harmony::estimate::estimator::for_model(corpus, model, context),
+        computed,
+        declared,
+    )
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
@@ -361,28 +429,8 @@ fn main() -> ExitCode {
             let candidates =
                 llm_harmony::resolve::identity::candidates(&ledger, &inventory, &model);
             let corpus = llm_harmony::estimate::corpus::load_default();
-            // A declared floor beats a refusal when nothing has been measured.
-            // Provider figures first (vLLM-MLX publishes memory_gb, Ollama
-            // size), then the artifact's own size from the disk ledger.
-            let declared = candidates.iter().find_map(|c| {
-                ledger.rows.iter().find(|r| r.kind == c.provider).and_then(|r| {
-                    match &r.outcome {
-                        llm_harmony::ledger::Outcome::Ok(ms) => ms
-                            .iter()
-                            .find(|m| m.id == c.provider_model_id)
-                            .and_then(|m| m.weights_bytes),
-                        _ => None,
-                    }
-                }).or_else(|| {
-                    c.artifact.as_ref().and_then(|id| {
-                        inventory.artifacts.iter().find(|a| &a.id == id).map(|a| a.bytes)
-                    })
-                })
-            });
-            let est = llm_harmony::estimate::estimator::with_declared(
-                llm_harmony::estimate::estimator::for_model(&corpus, &model, context),
-                declared,
-            );
+            let est = estimate_for(&config, &ledger, &inventory, &candidates, &model, context, &corpus);
+
             let decision =
                 llm_harmony::resolve::decide::decide(&candidates, &est, &machine, reserve);
 
@@ -527,7 +575,23 @@ fn main() -> ExitCode {
                 }
             };
             let corpus = llm_harmony::estimate::corpus::load_default();
-            let est = llm_harmony::estimate::estimator::for_model(&corpus, &model, context);
+            // The same ladder `resolve` admits on, so the two verbs can never
+            // disagree about what a model costs. Polling costs ~10 ms and buys
+            // the computed rung, which is the whole point of asking.
+            let config = match Config::load(None) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("llm-harmony: {e}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            let http = Http::new(Duration::from_millis(1500));
+            let ledger = Ledger::assemble(&config, &http, machine);
+            let inventory = llm_harmony::inventory::Inventory::scan_offline(None);
+            let candidates =
+                llm_harmony::resolve::identity::candidates(&ledger, &inventory, &model);
+            let est =
+                estimate_for(&config, &ledger, &inventory, &candidates, &model, context, &corpus);
             if json {
                 println!("{}", serde_json::to_string_pretty(&est).unwrap());
             } else {

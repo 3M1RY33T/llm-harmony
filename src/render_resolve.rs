@@ -22,6 +22,10 @@ pub fn render(d: &Decision, e: &Estimate, machine: &Machine, reserve: u64) -> St
                     e.samples,
                     if e.samples == 1 { "" } else { "s" }
                 )),
+                (Some(b), Basis::Computed) => out.push_str(&format!(
+                    "  estimate   {} (computed from the artifact)\n",
+                    crate::render::human_bytes(b)
+                )),
                 (Some(b), Basis::Declared) => out.push_str(&format!(
                     "  predicted  {}  (DECLARED — weights only, a floor not a peak)\n",
                     human_bytes(b)
