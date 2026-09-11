@@ -76,6 +76,28 @@ pub fn render_json(ledger: &Ledger) -> String {
     serde_json::to_string_pretty(ledger).expect("ledger is serialisable")
 }
 
+/// What each provider can actually do, for `llm-harmony verify`.
+///
+/// Exists because the answer changed twice under this project's feet: two
+/// evict paths that were documented turned out not to exist. Printing what
+/// was probed is cheaper than remembering which table is current.
+pub fn render_verify(
+    rows: &[(crate::provider::ProviderKind, String, bool, crate::provider::Actuation)],
+) -> String {
+    use crate::provider::Actuation;
+
+    let mut out = String::new();
+    for (kind, url, reachable, actuation) in rows {
+        let reach = if *reachable { "reachable" } else { "not running" };
+        let what = match actuation {
+            Actuation::ModelLevel => "model-level".to_string(),
+            Actuation::SelfManaged { ceiling } => format!("self-managed ({ceiling})"),
+        };
+        out.push_str(&format!("{:<10} {:<24} {:<12} {}\n", kind.as_str(), url, reach, what));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -191,5 +213,22 @@ mod tests {
         assert_eq!(v["rows"][2]["outcome"]["detail"]["error"], "not-listening");
         assert_eq!(v["rows"][0]["outcome"]["status"], "ok");
         assert_eq!(v["machine"]["total_bytes"], 25_769_803_776u64);
+    }
+
+    #[test]
+    fn verify_names_the_ceiling_of_a_self_managed_provider() {
+        use crate::provider::{Actuation, ProviderKind};
+        let out = render_verify(&[
+            (ProviderKind::LmStudio, "http://127.0.0.1:1234".into(), true, Actuation::ModelLevel),
+            (
+                ProviderKind::LlamaCpp,
+                "http://127.0.0.1:8080".into(),
+                true,
+                Actuation::SelfManaged { ceiling: "max_instances" },
+            ),
+        ]);
+        assert!(out.contains("lmstudio"), "{out}");
+        assert!(out.contains("model-level"), "{out}");
+        assert!(out.contains("self-managed (max_instances)"), "a bare 'self-managed' tells the operator nothing actionable: {out}");
     }
 }

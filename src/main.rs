@@ -52,6 +52,15 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// What each provider can actually do, probed rather than assumed.
+    Verify {
+        #[arg(long)]
+        json: bool,
+        #[arg(long, value_name = "PATH")]
+        config: Option<PathBuf>,
+        #[arg(long, default_value_t = 1500)]
+        timeout_ms: u64,
+    },
     /// Write a launchd agent for a provider. Writes to ~/Library/LaunchAgents.
     Install {
         provider: String,
@@ -159,6 +168,48 @@ fn main() -> ExitCode {
                 println!("{}", render_json(&ledger));
             } else {
                 print!("{}", render_table(&ledger));
+            }
+            ExitCode::SUCCESS
+        }
+        Command::Verify { json, config, timeout_ms } => {
+            // The answer to "why did it refuse to unload that?", in one place.
+            // Two of the four providers publish no model-level verb at all,
+            // and that was only ever discovered by probing -- so this prints
+            // what the servers say, never what the docs remember.
+            let config = match Config::load(config.as_deref()) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("llm-harmony: {e}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            let http = Http::new(Duration::from_millis(timeout_ms));
+            let rows: Vec<_> = config
+                .providers
+                .iter()
+                .map(|p| {
+                    let adapter = llm_harmony::adapters::adapter_for(p.kind);
+                    let reachable = adapter.probe(&http, &p.url).is_ok();
+                    (p.kind, p.url.clone(), reachable, adapter.actuation())
+                })
+                .collect();
+
+            if json {
+                let docs: Vec<_> = rows
+                    .iter()
+                    .map(|(kind, url, reachable, actuation)| {
+                        serde_json::json!({
+                            "provider": kind.as_str(),
+                            "url": url,
+                            "reachable": reachable,
+                            "actuation": actuation,
+                        })
+                    })
+                    .collect();
+                let doc = serde_json::json!({ "schema": 1, "providers": docs });
+                println!("{}", serde_json::to_string_pretty(&doc).unwrap());
+            } else {
+                print!("{}", llm_harmony::render::render_verify(&rows));
             }
             ExitCode::SUCCESS
         }

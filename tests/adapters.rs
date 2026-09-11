@@ -292,3 +292,41 @@ fn lmstudio_reports_no_artifact_path() {
     let out = LmStudio.list(&http(), &s.base_url()).unwrap();
     assert!(out.iter().all(|m| m.artifact_path.is_none()));
 }
+
+// --- Actuation capability (slice 5, Task 1) ---
+//
+// What harmony may DO to a provider, as opposed to what it can read. Probed
+// live 2026-09-10 with all four servers running; see
+// docs/plans/2026-09-10-actuation.md for the transcript.
+
+use llm_harmony::provider::Actuation;
+
+/// Probed live 2026-09-10: `lms load` and `lms unload` both exist.
+#[test]
+fn lmstudio_and_ollama_are_model_level() {
+    assert!(matches!(LmStudio.actuation(), Actuation::ModelLevel));
+    assert!(matches!(Ollama.actuation(), Actuation::ModelLevel));
+}
+
+/// Probed live 2026-09-10: `POST /api/models/unload/<real-model>` returns 404,
+/// and vLLM-MLX publishes no load or unload route in its own openapi.json.
+/// Their only ceilings are the ones they were started with.
+#[test]
+fn llamacpp_and_vllm_are_self_managed_and_name_their_ceiling() {
+    match LlamaCpp.actuation() {
+        Actuation::SelfManaged { ceiling } => assert_eq!(ceiling, "max_instances"),
+        a => panic!("{a:?}"),
+    }
+    match Vllm.actuation() {
+        Actuation::SelfManaged { ceiling } => assert_eq!(ceiling, "memory_budget_gb"),
+        a => panic!("{a:?}"),
+    }
+}
+
+/// The distinction the planner branches on, so it belongs to the type rather
+/// than to a match at every call site.
+#[test]
+fn only_a_model_level_provider_can_unload() {
+    assert!(LmStudio.actuation().can_unload());
+    assert!(!LlamaCpp.actuation().can_unload());
+}

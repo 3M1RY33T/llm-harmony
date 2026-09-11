@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::http::Http;
-use crate::provider::{Adapter, LoadedModel, ProbeError, ProviderKind, State};
+use crate::provider::{Actuation, Adapter, LoadedModel, ProbeError, ProviderKind, State};
 
 pub struct Ollama;
 
@@ -73,5 +73,11 @@ impl Adapter for Ollama {
         }
 
         Ok(out)
+    }
+
+    /// Verified 2026-09-10: residency is controlled by `keep_alive`
+    /// on an ordinary request -- 0 drops a model, a duration holds it.
+    fn actuation(&self) -> Actuation {
+        Actuation::ModelLevel
     }
 }

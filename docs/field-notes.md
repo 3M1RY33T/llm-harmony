@@ -13,9 +13,13 @@ All four expose both halves an adapter needs. None had to be invented.
 | Provider | Observe | Evict |
 |---|---|---|
 | LM Studio | `GET /api/v0/models` → `state`, `loaded_context_length`, `type`, `capabilities`; `lms ps` | `lms unload` |
-| llama.cpp | `GET /v1/models` → `meta.n_ctx`, `meta.n_ctx_train`; router `GET /running` | `POST /api/models/unload/<model>` |
-| vLLM-MLX | `GET /v1/models`; registry `memory_budget_gb` | registry eviction |
+| llama.cpp | `GET /v1/models` → `meta.n_ctx`, `meta.n_ctx_train`; router `GET /running` | **none** — see below |
+| vLLM-MLX | `GET /v1/models`; registry `memory_budget_gb` | **none** — see below |
 | Ollama | `ollama ps`, `GET /api/ps` | `ollama stop`, `keep_alive: 0` |
+
+**Corrected 2026-09-10.** Two entries in the Evict column were written from
+documentation and were never real. The originals are struck above and argued
+immediately below.
 
 ## Context windows: capability vs configuration
 
@@ -92,6 +96,58 @@ whole life of three slices. The fixture caveat was written down at the time,
 which is the only reason it was ever reconciled.
 
 **Rule:** an adapter is not verified by its tests. It is verified by the server.
+
+### Two evict paths in this document were never real
+
+Found 2026-09-10, the first time anything tried to *use* the Evict column
+rather than write it down. All four providers were running.
+
+| Probe | Result |
+|---|---|
+| `POST /api/models/unload/Qwen3-14B-Claude-4.5-Opus-Distill-Q4_K_M` (llama.cpp) | **404** |
+| the same path by `GET` | **404** |
+| vLLM-MLX `/openapi.json`, every route | no load, no unload, no evict |
+
+The llama.cpp probe used a **real model id**, so 404 means the route is absent
+rather than the model being unknown. vLLM-MLX's own OpenAPI document lists 23
+routes; the only `DELETE`s are `/v1/cache` and `/v1/cache/prefix`, which are
+the prefix cache, not residency.
+
+What they expose instead is a ceiling and an autoloader. llama.cpp's router
+publishes `{"role":"router","max_instances":1,"models_autoload":true}` at
+`/props`: it loads a model on first request and evicts past its own limit.
+vLLM-MLX bounds itself with `memory_budget_gb` and evicts internally.
+
+**Consequence for harmony:** eviction granularity is asymmetric. Two providers
+expose a model-level verb; two expose only a process and a ceiling. Harmony can
+bound the latter pair at install time and account for them after, and can never
+unload one model from either. `design.md` §6 anticipated exactly this — *"a
+provider configured with no ceiling and no unload path is a provider the daemon
+can account for but never act on"* — so the design survived; the table did not.
+
+**Rule, third restatement:** an evict path is verified by a 200 from the live
+server, not by its presence in a README. `llm-harmony verify` prints the probed
+answer so this table never has to be trusted from memory again.
+
+### LM Studio's own estimator is weights-only
+
+`lms load --estimate-only` looks like a free, authoritative footprint. It is
+not — it is the `Declared` basis wearing a vendor badge. Same model, two
+windows, 2026-09-10:
+
+```
+-c 8192   → Estimated Total Memory: 8.38 GiB   Confidence: LOW
+-c 40960  → Estimated Total Memory: 8.38 GiB   Confidence: LOW
+```
+
+Flat across a 5× context change, and 8.38 GiB is exactly the GGUF's size on
+disk. The corpus measured that same shape resident at **9.60 GB**. LM Studio
+says `Confidence: LOW` itself, which is honest; the trap is that a consumer
+reads the number and not the label.
+
+**Rule:** a vendor's own estimate is still a declared figure. If it does not
+move when the context window moves, it does not model the KV cache, and the KV
+cache is the part that wedges the machine.
 
 ## Control surfaces lie too
 

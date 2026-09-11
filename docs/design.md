@@ -171,10 +171,19 @@ All four surfaces exist already (verified 2026-09-08):
 
 ```
 LM Studio   GET /api/v0/models  → state, loaded_context_length   |  lms unload
-llama.cpp   GET /v1/models      → meta.n_ctx ; GET /running      |  POST /api/models/unload/<model>
-vLLM-MLX    GET /v1/models      ; registry memory budget         |  registry eviction
+llama.cpp   GET /v1/models      → status.value ; GET /props      |  none (max_instances)
+vLLM-MLX    GET /v1/status      → loaded, memory_gb, source      |  none (memory_budget_gb)
 Ollama      ollama ps / GET /api/ps                              |  ollama stop, keep_alive: 0
 ```
+
+**Corrected 2026-09-10.** The right-hand column originally claimed
+`POST /api/models/unload/<model>` for llama.cpp and "registry eviction" for
+vLLM-MLX. Probed with all four servers up, neither exists — see
+[`field-notes.md`](field-notes.md), *two evict paths in this document were
+never real*. **Eviction granularity is asymmetric:** two providers expose a
+model-level verb, two expose only a process and a ceiling. That is not a gap
+to close but a fact to design around, and §6 above already stated the
+consequence before it was measured.
 
 Discovery: scan a configured port list, identify by response shape. A provider
 that is not running is simply absent from the ledger — never an error.

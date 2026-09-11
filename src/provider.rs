@@ -126,10 +126,41 @@ impl fmt::Display for ProbeError {
     }
 }
 
-/// Read-only by construction.
+/// What harmony may actually do to a provider's resident models.
 ///
-/// There is deliberately no `unload`, `stop`, or `evict` method. Slice 1 cannot
-/// free memory, and that is checked by reading this trait rather than a config.
+/// This is a property of a **verified control surface**, never of config. A
+/// provider whose unload path 404s is `SelfManaged` no matter what any TOML
+/// file claims -- see `docs/field-notes.md`, *an adapter written from
+/// documentation is a hypothesis*, which this enum exists to stop repeating.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "actuation", rename_all = "kebab-case")]
+pub enum Actuation {
+    /// Load and unload one model at a time, by a verb probed against the
+    /// server. LM Studio (`lms load`/`lms unload`) and Ollama (`keep_alive`).
+    ModelLevel,
+    /// Loads on first request and evicts at its own ceiling. Harmony may
+    /// admit, account, and bound it at install time -- never actuate it.
+    /// llama.cpp (`max_instances`) and vLLM-MLX (`memory_budget_gb`), both
+    /// verified 2026-09-10 to publish no model-level load or unload route.
+    SelfManaged { ceiling: &'static str },
+}
+
+impl Actuation {
+    /// The question the eviction planner asks. Kept on the type so no caller
+    /// has to match on `ProviderKind` to answer it.
+    pub fn can_unload(&self) -> bool {
+        matches!(self, Actuation::ModelLevel)
+    }
+}
+
+/// Observation, plus a declaration of what could be actuated.
+///
+/// Through slice 4 this trait was read-only by construction: no `unload`, no
+/// `evict`, checked by reading the trait rather than a config. Slice 5 ends
+/// that, and `Actuation` is what replaces it -- the constraint moves from
+/// "the method does not exist" to "the provider says whether it can", which
+/// is stronger, because two of the four genuinely cannot and said so only
+/// when probed.
 pub trait Adapter: Send + Sync {
     fn kind(&self) -> ProviderKind;
 
@@ -138,6 +169,9 @@ pub trait Adapter: Send + Sync {
 
     /// Every model the provider knows about, with its state.
     fn list(&self, http: &crate::http::Http, base: &str) -> Result<Vec<LoadedModel>, ProbeError>;
+
+    /// What this adapter may do beyond observing. Verified, not declared.
+    fn actuation(&self) -> Actuation;
 }
 
 #[cfg(test)]

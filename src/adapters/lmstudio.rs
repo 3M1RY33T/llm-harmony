@@ -1,5 +1,5 @@
 use crate::http::Http;
-use crate::provider::{Adapter, LoadedModel, ProbeError, ProviderKind, State};
+use crate::provider::{Actuation, Adapter, LoadedModel, ProbeError, ProviderKind, State};
 
 pub struct LmStudio;
 
@@ -62,5 +62,12 @@ impl Adapter for LmStudio {
                 })
             })
             .collect())
+    }
+
+    /// Verified 2026-09-10: `lms load <model> [-c N]` and
+    /// `lms unload <model>` both exist. The CLI is the only control
+    /// surface -- the REST API has no load or unload route.
+    fn actuation(&self) -> Actuation {
+        Actuation::ModelLevel
     }
 }

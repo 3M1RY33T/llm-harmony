@@ -1,5 +1,5 @@
 use crate::http::Http;
-use crate::provider::{Adapter, LoadedModel, ProbeError, ProviderKind, State};
+use crate::provider::{Actuation, Adapter, LoadedModel, ProbeError, ProviderKind, State};
 
 pub struct LlamaCpp;
 
@@ -75,5 +75,13 @@ impl Adapter for LlamaCpp {
                 })
             })
             .collect())
+    }
+
+    /// Verified 2026-09-10: `POST /api/models/unload/<model>` returns
+    /// 404 for a real model id, on GET and POST alike. The router
+    /// self-manages -- `models_autoload: true`, `max_instances: 1` --
+    /// so loading a second model is what evicts the first.
+    fn actuation(&self) -> Actuation {
+        Actuation::SelfManaged { ceiling: "max_instances" }
     }
 }

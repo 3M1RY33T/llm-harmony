@@ -1,5 +1,5 @@
 use crate::http::Http;
-use crate::provider::{Adapter, LoadedModel, ProbeError, ProviderKind, State};
+use crate::provider::{Actuation, Adapter, LoadedModel, ProbeError, ProviderKind, State};
 
 pub struct Vllm;
 
@@ -64,5 +64,13 @@ impl Adapter for Vllm {
                 })
             })
             .collect())
+    }
+
+    /// Verified 2026-09-10 against the server's own `/openapi.json`:
+    /// there is no load or unload route. `DELETE /v1/cache` is the
+    /// prefix cache, not residency. Eviction is internal policy,
+    /// bounded by `memory_budget_gb`.
+    fn actuation(&self) -> Actuation {
+        Actuation::SelfManaged { ceiling: "memory_budget_gb" }
     }
 }
