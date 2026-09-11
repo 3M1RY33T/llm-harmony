@@ -367,6 +367,35 @@ which was that a missed short-lived state be observed rather than imagined.
    and this is that case, scoped to intake and no further. Moving the 148 GB
    the providers manage is not on the table: it is the least reversible act in
    the project, and every provider's own updater would contest it forever.
-5. **How much of a provider's footprint is not model memory?** Measured
-   2026-09-09: LM Studio idles at 592 MB across five Electron processes with
-   nothing loaded. The estimator must subtract a baseline it does not yet track.
+5. ~~**How much of a provider's footprint is not model memory?**~~ **Answered
+   2026-09-11, from ~800 recorded readings.** The one-off measurement of
+   2026-09-09 — LM Studio idling at 592 MB across five Electron processes —
+   held up, and the corpus now prices the other three:
+
+   | Provider | Idle readings | p50 | p99 | Largest single |
+   |---|---|---|---|---|
+   | LM Studio | 193 | 537 MiB | 637 MiB | 788 MiB |
+   | Ollama | 202 | 26 MiB | 28 MiB | 31 MiB |
+   | llama.cpp | 197 | 20 MiB | 22 MiB | 101 MiB |
+   | vLLM-MLX | **2** | 332 MiB | — | 332 MiB |
+
+   **The baseline term is p99, not the maximum** — a departure from §2's
+   *over-estimate, refuse early* that is worth stating rather than slipping in.
+   The maximum is one reading and it moves: LM Studio's grew from 637 MiB to
+   788 MiB within an hour of recording, on a single sample, while p95 sat
+   still at 571 MiB. Over-estimating against a distribution buys safety;
+   over-estimating against an unbounded tail buys an arms race with whatever
+   Electron did once. At p99, all four providers idle costs **≈1.0 GiB** —
+   the baseline term in slice 6's cost function, and 4% of this machine.
+
+   Two things the numbers do not settle:
+
+   - **vLLM-MLX's figure rests on two readings.** Structural rather than bad
+     luck: it has no model-level unload ([`field-notes.md`](field-notes.md)),
+     so it is idle only between process start and its first request. `fit`
+     should mark a plan that depends on that figure. It is also the first
+     concrete instance of the state slice 3 named as the daemon's bar — a
+     short-lived one that a per-turn recorder caught twice in 196 tries.
+     Evidence rather than a trigger; the daemon already has slice 7's slot.
+   - **llama.cpp's largest reading is five times its p99** (101 MiB against
+     22 MiB), on a single process. Absorbed by the figure, not understood.

@@ -56,6 +56,9 @@ the daemon from it:
 * **The corpus had no LM Studio baseline**, because LM Studio never sat idle
   while the recorder existed. That kills *whole-tree minus idle baseline* — a
   provider that never idles never yields one.
+  **Superseded 2026-09-11:** it now holds 193 idle LM Studio readings, and
+  §10 Q5 is answered from them. The finding stands as the reason this slice was
+  reshaped; it is no longer true of the corpus.
 * **Per-process attribution needs no baseline.** The model-bearing backend
   dwarfs the shell (8.39 GB against 0.28 GB, measured), so the largest process
   in the tree *is* the model. That works from a single observation, which
@@ -144,11 +147,13 @@ after the first two have already moved.
 - The search is exhaustive, not heuristic. Six models with four candidates each
   is small, and exhaustive is what makes *why not the other one* printable.
 
-**Blocked on:** [`architecture.md`](architecture.md) §10 Q5 — per-provider
-baselines. `estimate` gets away without them because one model means one
-baseline; a set does not. This is the first feature that cannot be correct
-without an answer, and the answer is a measurement rather than a decision: one
-`status --record` per provider while that provider sits idle.
+**Unblocked 2026-09-11.** It needed [`architecture.md`](architecture.md) §10
+Q5 — per-provider baselines, which `estimate` gets away without because one
+model means one baseline and a set does not. Measured rather than decided, and
+the corpus already held it: **≈1.0 GiB with all four providers idle**, taken at
+p99 because the maximum is a single reading that drifts. Three of the four
+figures are tight; vLLM-MLX's rests on two readings, so a plan that leans on it
+has to say so.
 
 **Settles:** §10 Q2, at the memory end. Set admission is the function slice 7
 needs for jobs — *is there room to convert this* is `fit` over the disk ledger
