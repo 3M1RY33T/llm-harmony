@@ -20,7 +20,7 @@ and it caught four defects that guesswork would have shipped.
 | 3 — Measured estimator | **Built.** `estimate` predicts a footprint and returns a fit verdict. |
 | 4 — `RESOLVE` | **Built.** Placement by artifact identity; admission by the estimate ladder. |
 | 5 — Actuation | **Built.** 249 tests. `load`, `unload`, `switch`, `pin`/`unpin`, `verify`. Planned in [`plans/2026-09-10-actuation.md`](plans/2026-09-10-actuation.md). |
-| 6 — Arbitration and set admission | Sketched |
+| 6 — Arbitration and set admission | **Planned** in [`plans/2026-09-11-arbitration.md`](plans/2026-09-11-arbitration.md), which corrected two of the four rows below. |
 | 7 — Intake and conversion | Sketched |
 | 8 — Hosting API | Sketched |
 
@@ -111,10 +111,19 @@ one identity, and not one of them is available to a provider on its own.
 | `compare <model>` | every provider that could serve this, priced, with a fit verdict | the candidate list `resolve` builds and discards (`src/resolve/decide.rs`) |
 | `lease <model> --ttl --owner` | may this be evicted out from under a caller still using it? | `src/pins.rs`, plus an owner and an expiry |
 | `fit <model>...` | can these be resident *at once*, and under which assignment? | the estimate ladder, one machine read, and a search |
-| `status --budgets` | do the four per-provider ceilings sum to more than the machine? | config that is already read |
+| `status --budgets` | what is each provider allowed to take, and in what unit? | each provider's own argv, environ, API or config — not harmony's |
 
 **Cheapest first, and that is also the order of the value.** `compare` prints
 data the resolver already computes and throws away.
+
+**Corrected by the plan, 2026-09-11.** Two rows above were sketched wrong.
+`status --budgets` cannot sum anything — the four ceilings are in three
+different units, one of them is Ollama's own undocumented default and so
+unknowable, and LM Studio has none in either unit; the command prints what each
+provider is allowed with `?` where it cannot be read. And it is not a standalone
+nicety: llama.cpp runs `--models-max 1` here, so a set can be refused by a count
+ceiling with the bytes to spare, which makes the ceiling reader an input to
+`fit` and moves it ahead of it in the build order.
 
 **Why here:** it is composition over slices 1–5, and it closes a gap slice 5
 opened. `src/pins.rs` says a pin is *a veto, never a reservation*, and it is
