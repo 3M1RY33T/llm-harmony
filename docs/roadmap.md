@@ -20,8 +20,8 @@ and it caught four defects that guesswork would have shipped.
 | 3 — Measured estimator | **Built.** `estimate` predicts a footprint and returns a fit verdict. |
 | 4 — `RESOLVE` | **Built.** Placement by artifact identity; admission by the estimate ladder. |
 | 5 — Actuation | **Built.** 249 tests. `load`, `unload`, `switch`, `pin`/`unpin`, `verify`. Planned in [`plans/2026-09-10-actuation.md`](plans/2026-09-10-actuation.md). |
-| 6 — Arbitration and set admission | **Planned** in [`plans/2026-09-11-arbitration.md`](plans/2026-09-11-arbitration.md), which corrected two of the four rows below. |
-| 7 — Intake and conversion | Sketched |
+| 6 — Arbitration and set admission | **Built.** `compare`, `lease`/`release`, `fit`, `status --budgets`. Planned in [`plans/2026-09-11-arbitration.md`](plans/2026-09-11-arbitration.md), which corrected two of the four rows below and records what execution changed. |
+| 7 — Intake and conversion | **Half built.** `search` and `add` pull a pre-built GGUF or MLX repo, admitted against both ledgers before a byte moves. Conversion not started. |
 | 8 — Hosting API | Sketched |
 
 ---
@@ -173,6 +173,33 @@ structure.
 ## Slice 7 — Intake and conversion
 
 **Delivers:** `llm-harmony add <hf-id>`, conversion, and real deletion.
+
+**Half built, 2026-09-11 — the pull, not the conversion.** `search` and `add`
+handle a repo that is *already* built for a provider harmony can serve: GGUF
+and MLX. The order is the design and the tests assert it — resolve the repo,
+read its provenance, price it against both ledgers, choose its store, and only
+then move a byte, because a refusal at 97% is not a refusal.
+
+Planned as Task 8 of Delroy's `docs/hosting-page-r27-plan.md` rather than in
+this repo, because the driver was the hosting page and the plan spans both
+codebases. Worth knowing where to look; worth not repeating.
+
+What running it caught, none of which a unit test would have:
+
+- **A sharded GGUF is one build across several files.** "Smallest loadable
+  file" chose `…-00007-of-00007.gguf` — 3.25 GB, which fit comfortably, so
+  both ledgers passed and a pull started for one seventh of a model. Shards
+  are now folded into a build priced at its total, and one unpriced part makes
+  the whole total unknown.
+- **An importance matrix is not a model.** `imatrix_unsloth.gguf` is a real,
+  loadable GGUF used to *produce* a quantisation, and "smallest loadable"
+  chose it. So is an `mmproj` projector.
+- **Search priced disk against no directory** and reported `0B free`, so every
+  row read *will not fit* on a machine with 161 GB spare.
+
+Still out, and the reason this is a half rather than a slice: conversion, and
+therefore the scratch accounting, the converter pinned per serving binary, the
+defect patching, and the capability-loss diff.
 
 The pipeline [`inventory.md`](inventory.md) §5 specifies: resolve → verify
 provenance → check fit → download → convert → patch → place → register. Plus the

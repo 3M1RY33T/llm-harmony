@@ -168,9 +168,28 @@ Two HF repos this session *looked* like builds of a wanted model and were not:
 Rule: an artifact claiming to be a build of X must **declare** X, or be treated
 as an unrelated model that happens to share a name.
 
+**Amended 2026-09-11: this warns, it does not refuse.** Behind a search box the
+rule was going to be the only thing between a result and a wrong model on
+disk — which argued for gating, and is what
+[`architecture.md`](architecture.md) §7 said. Put to the user with the search
+box built, the answer was the other way: show the declared and the expected
+`base_model` side by side and let the pull proceed, because a refusal is worked
+around in a terminal where nothing checks at all. The obligation moves onto the
+warning instead — it names both models and is carried on the result, not only
+in the progress stream.
+
 **Check fit.** Download size, conversion scratch (~40 GB for a 9B), and the
 resulting footprint against free disk *and* the memory budget from `design.md`.
 Refuse before a 28 GB download, not after.
+
+**Which ledger refuses, amended 2026-09-11.** Disk refuses; memory warns. A
+build that will land but cannot be loaded *as things stand* is still worth
+having — making room in memory is a different act from making room on disk, and
+the memory reading changes minute to minute while the disk one does not. So
+`add` plans it and carries the reason outward. The memory half is still checked
+against the **same bar the loader uses** (`free − reserve`, not raw free
+memory): two admission paths over one resource holding each other to different
+numbers is how a pull gets admitted that `load` then refuses.
 
 **Convert — with the converter that matches the runtime.** `convert_hf_to_gguf.py`
 from llama.cpp *master* against a `b10240` binary produced GGUFs that failed to

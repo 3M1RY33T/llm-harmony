@@ -26,7 +26,7 @@ claim of the project.
 > leaking its raw token stream. Same word, different thing: that Harmony is a
 > wire format a model emits; this one decides what fits.
 
-**Status: slices 1–5 implemented**, 281 tests. `status` reads all four
+**Status: slices 1–6 implemented, and half of 7**, 395 tests. `status` reads all four
 providers, `ls` and `rm --dry-run` cover 146 GB across five stores, `estimate`
 predicts a model's footprint, `resolve` answers for a *model* rather than a
 provider, and `start` brings a provider up under launchd. `clean --redundant`
@@ -38,9 +38,22 @@ Slice 5 made it act: `load`, `unload` and `switch` change what is resident,
 admitted against the machine and supervised while they happen, with `pin` to
 take a model off the table. Two of the four providers turned out to have no
 model-level unload at all — `llm-harmony verify` prints what each one can
-really do, probed rather than remembered. Next is arbitration and set
-admission — `compare`, `lease`, `fit` and `status --budgets`, all composition
-over what is already here — then intake and conversion.
+really do, probed rather than remembered.
+
+Slice 6 arbitrates. `compare` prices every provider that could serve a model
+and marks the one `resolve` would pick; `lease` holds a model for a bounded
+time so another caller's request cannot evict it, naming the holder in any
+refusal it causes; `fit` answers whether a *set* can be resident at once,
+charging each provider's overhead once and nothing that is already loaded; and
+`status --budgets` reads what each provider is allowed to take. That last one
+found the number this project is about: **the only byte ceiling on this
+machine is vLLM-MLX's 14.0 G of 24.0 G, and nothing bounds the other three in
+bytes at all.**
+
+Slice 7 is half done. `search` and `add` pull an already-built GGUF or MLX
+repo from Hugging Face — provenance read, both ledgers priced, store chosen,
+and every refusal made *before* a byte moves. Conversion is not started, so a
+bf16-only repo is shown and honestly labelled rather than hidden.
 
 | Document | What it covers |
 |---|---|

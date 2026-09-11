@@ -106,3 +106,117 @@ fn an_unknown_provider_is_refused_before_any_work() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+// --- r27 Task 1: every verb answers in JSON ---------------------------------
+//
+// `pin`, `unpin`, `install`, `start` and `stop` printed prose and exited, and
+// `estimate` emitted a bare document with no `schema`. A caller cannot compose
+// a wrapper around a sentence, and it cannot tell "pinned it" from "it was
+// already pinned" by matching English.
+
+/// A HOME of its own, so a test never reads or writes the developer's pins.
+fn isolated_home(t: &Tree) -> String {
+    t.write("home/.keep", "").parent().unwrap().display().to_string()
+}
+
+/// A pin is idempotent, and the caller must be able to tell which happened --
+/// "pinned it" and "it was already pinned" are the same outcome and different
+/// events, and only one of them is worth a toast.
+#[test]
+fn pin_reports_each_target_and_whether_it_changed_anything() {
+    let t = Tree::new("cli-pin-json");
+    let home = isolated_home(&t);
+    let run = || {
+        Command::new(BIN)
+            .args(["pin", "qwen3:14b", "--provider", "ollama", "--json"])
+            .env("HOME", &home)
+            .output()
+            .expect("binary runs")
+    };
+
+    let first: serde_json::Value = serde_json::from_slice(&run().stdout).expect("a JSON document");
+    assert_eq!(first["schema"], 1);
+    assert_eq!(first["verb"], "pin");
+    assert_eq!(first["changed"], true, "the first pin changed something");
+    assert_eq!(first["targets"][0]["model"], "qwen3:14b");
+    assert_eq!(first["targets"][0]["provider"], "ollama");
+    assert_eq!(first["targets"][0]["changed"], true);
+
+    let again: serde_json::Value = serde_json::from_slice(&run().stdout).expect("a JSON document");
+    assert_eq!(again["changed"], false, "pinning twice changes nothing the second time");
+    assert_eq!(again["targets"][0]["changed"], false);
+}
+
+/// Unpinning something that was never pinned is the same shape, not an error:
+/// a UI asking for a state it is already in deserves an answer, not a failure.
+#[test]
+fn unpin_reports_nothing_changed_rather_than_failing() {
+    let t = Tree::new("cli-unpin-json");
+    let out = Command::new(BIN)
+        .args(["unpin", "never-pinned", "--provider", "ollama", "--json"])
+        .env("HOME", isolated_home(&t))
+        .output()
+        .expect("binary runs");
+
+    assert_eq!(out.status.code(), Some(0), "not being pinned is not a failure");
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("a JSON document");
+    assert_eq!(v["verb"], "unpin");
+    assert_eq!(v["changed"], false);
+}
+
+/// `start` is the verb behind a button on a dead provider. Its answer has to
+/// carry the readiness wait, because "started" and "answering" are not the
+/// same claim and the UI must not make the second one.
+#[test]
+fn start_reports_whether_the_provider_actually_answered() {
+    let t = Tree::new("cli-start-json");
+    // No launchd agent exists under this HOME, so this exercises the path the
+    // button hits most: asked to start something that was never installed.
+    let out = Command::new(BIN)
+        .args(["start", "ollama", "--timeout-s", "1", "--json"])
+        .env("HOME", isolated_home(&t))
+        .output()
+        .expect("binary runs");
+
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("a JSON document");
+    assert_eq!(v["schema"], 1);
+    assert_eq!(v["verb"], "start");
+    assert_eq!(v["provider"], "ollama");
+    assert_ne!(v["outcome"]["status"], "ready", "nothing was installed to start");
+    assert!(
+        v["outcome"]["reason"].as_str().is_some_and(|r| !r.is_empty()),
+        "a failure states its reason: {v}"
+    );
+    assert_eq!(v["changed"], false);
+}
+
+/// `stop` passes harmony's own refusal through rather than flattening it, so
+/// the page can say *why* rather than "failed".
+#[test]
+fn stop_passes_through_the_refusal_for_something_harmony_did_not_install() {
+    let t = Tree::new("cli-stop-json");
+    let out = Command::new(BIN)
+        .args(["stop", "ollama", "--json"])
+        .env("HOME", isolated_home(&t))
+        .output()
+        .expect("binary runs");
+
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("a JSON document");
+    assert_eq!(v["verb"], "stop");
+    assert_ne!(v["outcome"]["status"], "stopped");
+    assert!(v["outcome"]["reason"].as_str().is_some_and(|r| !r.is_empty()), "{v}");
+}
+
+/// An estimate crossing a process boundary needs a version like every other
+/// document. It is the one that already changed shape once.
+#[test]
+fn estimate_json_carries_a_schema() {
+    let out = Command::new(BIN)
+        .args(["estimate", "some-model-that-is-not-here", "--json"])
+        .output()
+        .expect("binary runs");
+
+    let v: serde_json::Value =
+        serde_json::from_slice(&out.stdout).expect("stdout is a JSON document");
+    assert_eq!(v["schema"], 1, "the estimate document is versioned: {v}");
+}

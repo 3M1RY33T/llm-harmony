@@ -16,6 +16,8 @@ fn pin(model: &str) -> Pin {
         model: model.to_string(),
         at: 1_788_900_000,
         note: None,
+        owner: None,
+        expires_at: None,
     }
 }
 
@@ -95,6 +97,8 @@ fn the_saved_document_is_schema_1_and_keeps_the_note() {
         model: "qwen3:14b".into(),
         at: 42,
         note: Some("in use for the review".into()),
+        owner: None,
+        expires_at: None,
     });
     p.save_to(&path).unwrap();
 
@@ -124,4 +128,35 @@ fn saving_creates_the_directory_and_leaves_no_temp_file_behind() {
         .filter(|n| n.contains("tmp"))
         .collect();
     assert!(leftovers.is_empty(), "temp file left behind: {leftovers:?}");
+}
+
+// --- r27 Task 3: a pin on a model that is not resident ----------------------
+
+/// A pin survives an unload -- that is the point of it being sticky, so the
+/// next load is protected -- which makes "protected, not currently loaded" a
+/// real state. `render_json` stamped `pinned` onto resident rows only, so it
+/// was the one state the document could not express, while `render_table`
+/// printed the held pins separately and could.
+#[test]
+fn status_json_lists_every_pin_including_ones_on_models_that_are_not_resident() {
+    use llm_harmony::ledger::Ledger;
+
+    let mut pins = Pins::empty();
+    pins.add(pin("a-model-nothing-has-loaded"));
+
+    // Nothing is resident, so there is no row for `pinned` to be stamped onto.
+    let ledger = Ledger {
+        schema_version: llm_harmony::ledger::SCHEMA,
+        machine: llm_harmony::memory::Machine::read().expect("this machine reports its memory"),
+        rows: Vec::new(),
+    };
+    let doc: serde_json::Value =
+        serde_json::from_str(&llm_harmony::render::render_json(&ledger, &pins))
+            .expect("a JSON document");
+
+    let listed = doc["pins"].as_array().expect("a top-level pins list");
+    assert_eq!(listed.len(), 1, "the pin is held whether or not it is loaded: {doc}");
+    assert_eq!(listed[0]["model"], "a-model-nothing-has-loaded");
+    assert_eq!(listed[0]["provider"], "lmstudio");
+    assert!(listed[0]["at"].as_u64().is_some(), "when it was set: {doc}");
 }

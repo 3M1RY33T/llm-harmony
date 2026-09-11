@@ -165,7 +165,14 @@ pub fn load_or_switch(
     };
 
     let ledger = Ledger::assemble(config, http, machine);
-    let pins = Pins::load();
+    let mut pins = Pins::load();
+    // A lapsed lease protects nothing, so drop the dead rows before deciding
+    // and let the next write persist the tidy-up. Housekeeping only: `holds`
+    // would have ignored them anyway.
+    let now = crate::record::now_unix();
+    if pins.sweep(now) > 0 {
+        let _ = pins.save();
+    }
     let inventory = crate::inventory::Inventory::scan_offline(None);
     let candidates = crate::resolve::identity::candidates(&ledger, &inventory, &request.model);
     let estimate = estimate_for(&ledger, &candidates);
@@ -179,6 +186,7 @@ pub fn load_or_switch(
         &machine,
         options.reserve_bytes,
         request,
+        now,
     );
 
     let actions = match decided {
@@ -485,6 +493,8 @@ fn pin(provider: ProviderKind, model: &str) {
         model: model.to_string(),
         at: crate::record::now_unix(),
         note: None,
+        owner: None,
+        expires_at: None,
     }) {
         let _ = pins.save();
     }

@@ -3,14 +3,57 @@ use crate::inventory::safety::{classify, Safety};
 use crate::inventory::Inventory;
 use crate::render::human_bytes;
 
-pub fn render_ls(inv: &Inventory) -> String {
-    let mut out = String::new();
-    out.push_str(&format!(
-        "{:<46} {:>7} {:>9}  {}\n",
-        "model", "builds", "on disk", "safety"
-    ));
+/// Is this file one of a model's *builds*, or one of the tokenizers, configs
+/// and READMEs sitting beside them? Counting every file reported 63 builds for
+/// a model with five.
+fn is_build(a: &crate::inventory::artifact::Artifact) -> bool {
+    matches!(
+        a.format,
+        crate::inventory::artifact::Format::Gguf
+            | crate::inventory::artifact::Format::Mlx
+            | crate::inventory::artifact::Format::SafetensorsBf16
+    )
+}
 
-    let mut rows: Vec<(String, usize, u64, &'static str)> = Vec::new();
+/// How many builds a model really has.
+///
+/// Counting build-format *paths* over-counts, for the same reason summing their
+/// bytes does: llama.cpp's pool symlinks into LM Studio's store, so one Q4
+/// appears twice and a two-build model reports three. `FileKey` is what says
+/// two paths are one allocation, so it is what this counts. A keyless artifact
+/// counts on its own — not knowing whether it is shared is not a reason to drop
+/// it from the tally.
+fn distinct_builds(arts: &[crate::inventory::artifact::Artifact]) -> usize {
+    let mut seen = std::collections::HashSet::new();
+    arts.iter()
+        .filter(|a| is_build(a))
+        .filter(|a| match a.key {
+            Some(k) => seen.insert(k),
+            None => true,
+        })
+        .count()
+}
+
+/// One model's row, as both the table and the JSON document need it.
+///
+/// Factored out rather than duplicated: `total_unique_bytes` and `classify`
+/// are the two figures a consumer of the JSON cannot re-derive from paths —
+/// bytes because a pool symlink and its target are one allocation, safety
+/// because it is a judgement about peers — so the document has to carry them,
+/// and carrying a *second* implementation of them is how a table and a
+/// document start disagreeing about the same disk.
+pub struct ModelRow<'a> {
+    pub identity: &'a crate::inventory::identity::ModelIdentity,
+    pub artifacts: Vec<crate::inventory::artifact::Artifact>,
+    pub builds: usize,
+    pub bytes: u64,
+    pub safety: &'static str,
+}
+
+/// Every model with at least one build, largest first — the reason anyone runs
+/// this is to find space.
+pub fn model_rows(inv: &Inventory) -> Vec<ModelRow<'_>> {
+    let mut rows: Vec<ModelRow> = Vec::new();
     for id in &inv.identities {
         let arts: Vec<_> = inv
             .artifacts
@@ -21,20 +64,7 @@ pub fn render_ls(inv: &Inventory) -> String {
         if arts.is_empty() {
             continue;
         }
-        // A repo holds tokenizers, configs and READMEs too. Only weight-
-        // bearing files are "builds"; counting every file reported 63 builds
-        // for a model with five.
-        let builds = arts
-            .iter()
-            .filter(|a| {
-                matches!(
-                    a.format,
-                    crate::inventory::artifact::Format::Gguf
-                        | crate::inventory::artifact::Format::Mlx
-                        | crate::inventory::artifact::Format::SafetensorsBf16
-                )
-            })
-            .count();
+        let builds = distinct_builds(&arts);
         if builds == 0 {
             continue;
         }
@@ -44,16 +74,65 @@ pub fn render_ls(inv: &Inventory) -> String {
             Safety::Reproducible { .. } => 1,
             Safety::Irreplaceable { .. } => 2,
         });
-        let label = match worst {
+        let safety = match worst {
             Some(Safety::Redundant { .. }) => "redundant",
             Some(Safety::Reproducible { .. }) => "reproducible",
             Some(Safety::Irreplaceable { .. }) => "IRREPLACEABLE",
             None => "-",
         };
-        rows.push((id.canonical.clone(), builds, bytes, label));
+        rows.push(ModelRow { identity: id, artifacts: arts, builds, bytes, safety });
     }
-    // Largest first: the reason anyone runs this is to find space.
-    rows.sort_by(|a, b| b.2.cmp(&a.2));
+    rows.sort_by(|a, b| b.bytes.cmp(&a.bytes));
+    rows
+}
+
+/// `ls --json`: the columns the table computes, plus the artifacts behind them.
+///
+/// A hosting screen groups and filters by format and store, because those are
+/// what decide which providers could serve a model; and it must know which
+/// paths are links, because removing one reclaims nothing and a reclaimable
+/// figure that counts them is wrong in the user's favour.
+pub fn document(inv: &Inventory) -> serde_json::Value {
+    let models: Vec<_> = model_rows(inv)
+        .iter()
+        .map(|r| {
+            serde_json::json!({
+                "canonical": r.identity.canonical,
+                "builds": r.builds,
+                "bytes": r.bytes,
+                "safety": r.safety,
+                "provenance": r.identity.provenance,
+                "artifacts": r.artifacts.iter().map(|a| serde_json::json!({
+                    "id": a.id,
+                    "path": a.path.display().to_string(),
+                    "store": a.store.as_str(),
+                    "format": a.format,
+                    "bits": a.bits,
+                    "bytes": a.bytes,
+                    "is_link": a.is_link,
+                })).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "schema": crate::ledger::SCHEMA,
+        "total_bytes": inv.total_bytes(),
+        "artifact_count": inv.artifacts.len(),
+        "models": models,
+    })
+}
+
+pub fn render_ls(inv: &Inventory) -> String {
+    let mut out = String::new();
+    out.push_str(&format!(
+        "{:<46} {:>7} {:>9}  {}\n",
+        "model", "builds", "on disk", "safety"
+    ));
+
+    let rows: Vec<(String, usize, u64, &'static str)> = model_rows(inv)
+        .iter()
+        .map(|r| (r.identity.canonical.clone(), r.builds, r.bytes, r.safety))
+        .collect();
 
     for (name, builds, bytes, label) in &rows {
         let short: String = name.chars().take(46).collect();

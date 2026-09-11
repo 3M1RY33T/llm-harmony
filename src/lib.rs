@@ -1,8 +1,11 @@
 pub mod actuate;
 pub mod estimate;
+pub mod fit;
 pub mod http;
 pub mod adapters;
+pub mod budget;
 pub mod config;
+pub mod intake;
 pub mod inventory;
 pub mod launch;
 pub mod ledger;
@@ -13,7 +16,11 @@ pub mod record;
 pub mod render;
 pub mod resolve;
 pub mod render_actuate;
+pub mod render_budget;
+pub mod render_compare;
+pub mod render_fit;
 pub mod render_estimate;
+pub mod render_lifecycle;
 pub mod render_ls;
 pub mod render_resolve;
 

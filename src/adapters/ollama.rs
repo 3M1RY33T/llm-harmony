@@ -53,7 +53,13 @@ impl Adapter for Ollama {
                 // /api/ps carries a digest, not a path. The blob it names is
                 // resolvable, but only through slice 2's scanner, which owns
                 // the blobs directory layout.
-                expires_at_unix: None,
+                //
+                // The expiry, though, is published right here, and leaving it
+                // None cost more than a missing UI field: `residents()` feeds
+                // it into `Resident.evict_rank`, so every resident model on
+                // every provider ranked 0 and `plan.rs`'s "least-recently-used
+                // first" was ledger order.
+                expires_at_unix: m["expires_at"].as_str().and_then(parse_rfc3339),
                 model_type: None,
                 artifact_path: None,
             });

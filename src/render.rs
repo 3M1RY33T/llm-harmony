@@ -73,12 +73,13 @@ pub fn render_table(ledger: &Ledger, pins: &crate::pins::Pins) -> String {
     // be refused on a machine that looks half empty, so it has to be visible
     // here rather than only in the refusal that mentions it.
     if !pins.all().is_empty() {
-        let held: Vec<String> = pins
-            .all()
-            .iter()
-            .map(|p| format!("{} on {}", p.model, p.provider.as_str()))
-            .collect();
-        out.push_str(&format!("{:<10} {}\n", "pinned", held.join(" \u{b7} ")));
+        // A lease has to be distinguishable from a pin here, or the line
+        // reports permanent protection for something that expires in an hour
+        // -- the same invisibility `pins.rs` warns about, inverted.
+        let now = crate::record::now_unix();
+        let held: Vec<String> = pins.all().iter().map(|p| p.blame(now)).collect();
+        let label = if pins.all().iter().any(|p| p.expires_at.is_some()) { "held" } else { "pinned" };
+        out.push_str(&format!("{:<10} {}\n", label, held.join(" \u{b7} ")));
     }
 
     out
@@ -108,6 +109,15 @@ pub fn render_json(ledger: &Ledger, pins: &crate::pins::Pins) -> String {
                 }
             }
         }
+    }
+    // Beside the per-row flag, not instead of it: a row that can answer for
+    // itself should, and a consumer reading one model never has to join two
+    // collections. But a pin is deliberately sticky -- it survives an unload so
+    // the next load is protected -- which makes "protected, not currently
+    // loaded" a real state with no row to carry it. `render_table` could say
+    // that and the document could not.
+    if let Some(obj) = doc.as_object_mut() {
+        obj.insert("pins".into(), serde_json::to_value(pins.all()).unwrap_or_default());
     }
     serde_json::to_string_pretty(&doc).expect("a document built from one")
 }
@@ -277,6 +287,8 @@ mod tests {
             model: model.into(),
             at: 0,
             note: None,
+            owner: None,
+            expires_at: None,
         });
         p
     }

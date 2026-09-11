@@ -273,12 +273,19 @@ now"* for free, which is a real feature and one nothing else offers.
 Once llm-harmony is the only way models arrive, duties that were previously
 advice become mandatory:
 
-- **Provenance verification becomes gating.** [`inventory.md`](inventory.md) §5
-  records two HF repos that claimed to be builds of models they were not — one
-  declaring a `base_model` with a near-identical name, one declaring none at all
-  while its config contradicted its own repo name. As a CLI convenience that
-  rule is guidance. As the intake path for a browsable hosting screen, it is the
-  only thing between a search result and a wrong model on disk.
+- ~~**Provenance verification becomes gating.**~~ **It informs, decided
+  2026-09-11** with a search box in front of the question.
+  [`inventory.md`](inventory.md) §5 records two HF repos that claimed to be
+  builds of models they were not — one declaring a `base_model` with a
+  near-identical name, one declaring none at all while its config contradicted
+  its own repo name. The reasoning for warning instead: a refusal is worked
+  around by downloading in a terminal, where there is no check at all, so a
+  gate that can be stepped over protects less than a warning that cannot be
+  missed. What that costs is real, and it is the whole safety story now: the
+  warning must name both models, survive into the pull's **result** document
+  rather than only its progress stream, and be legible in the page — a
+  mismatch that scrolled past during an 8 GB download is a mismatch nobody
+  saw. Implemented in `intake::provenance`, asserted in `tests/intake.rs`.
 - **Integrity checking does not exist yet.** HF publishes hashes; nothing
   verifies them.
 - **Conversion executes against remote-controlled metadata.**

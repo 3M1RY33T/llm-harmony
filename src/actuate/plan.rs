@@ -116,6 +116,9 @@ pub fn plan(
     machine: &Machine,
     reserve_bytes: u64,
     request: &Request,
+    // Unix seconds, for deciding whether a lease has lapsed. Passed in
+    // rather than read, so every path through this function is testable.
+    now: u64,
 ) -> Plan {
     let Some(target) = choose_candidate(candidates, request.provider) else {
         return Plan::Refused {
@@ -219,7 +222,7 @@ pub fn plan(
     // Not enough room. Find the smallest set that makes enough, never crossing
     // a pin and never taking a model observed to be serving.
     let need = wanted.saturating_sub(headroom);
-    let (victims, blocked) = victims_for(need, resident, pins, target, request);
+    let (victims, blocked) = victims_for(need, resident, pins, target, request, now);
 
     match victims {
         Some(vs) => {
@@ -276,12 +279,14 @@ fn ceiling_of(a: Actuation) -> &'static str {
 /// The smallest sufficient set, least-recently-used first.
 ///
 /// Returns the pins it had to skip either way, so a refusal can name them.
+#[allow(clippy::too_many_arguments)]
 fn victims_for<'a>(
     need: u64,
     resident: &'a [Resident],
     pins: &Pins,
     target: &Candidate,
     request: &Request,
+    now: u64,
 ) -> (Option<Vec<&'a Resident>>, Vec<String>) {
     let mut blocked: Vec<String> = Vec::new();
     let mut eligible: Vec<&Resident> = Vec::new();
@@ -297,8 +302,12 @@ fn victims_for<'a>(
         if !r.actuation.can_unload() || r.busy {
             continue;
         }
-        if pins.is_pinned(r.provider, &r.model) {
-            blocked.push(format!("{} on {}", r.model, r.provider));
+        if let Some(held) = pins.holds(r.provider, &r.model, now) {
+            // Named, with the owner and the time left, because a refusal an
+            // operator cannot trace to a holder is a refusal they cannot act
+            // on. `pins.rs` requires this of a pin; a lease makes it sharper,
+            // since nobody set it by hand.
+            blocked.push(held.blame(now));
             continue;
         }
         eligible.push(r);
@@ -334,7 +343,7 @@ fn refusal_reason(wanted: u64, headroom: u64, blocked: &[String]) -> String {
     if blocked.is_empty() {
         base
     } else {
-        format!("{base}; pinned and therefore untouchable: {}", blocked.join(", "))
+        format!("{base}; held and therefore untouchable: {}", blocked.join(", "))
     }
 }
 
@@ -349,6 +358,10 @@ fn alternatives(candidates: &[Candidate], chosen: Option<&Candidate>) -> Vec<Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Injected clock. Any fixed value works: no test here depends on the
+    /// wall clock, which is why `plan` takes the time instead of reading it.
+    const NOW: u64 = 1_789_000_000;
     use crate::inventory::artifact::Provenance;
     use crate::pins::Pin;
     use crate::provider::State;
@@ -397,7 +410,14 @@ mod tests {
     fn pins_with(entries: &[(ProviderKind, &str)]) -> Pins {
         let mut p = Pins::empty();
         for (provider, model) in entries {
-            p.add(Pin { provider: *provider, model: model.to_string(), at: 0, note: None });
+            p.add(Pin {
+                provider: *provider,
+                model: model.to_string(),
+                at: 0,
+                note: None,
+                owner: None,
+                expires_at: None,
+            });
         }
         p
     }
@@ -429,6 +449,7 @@ mod tests {
             &machine(2 * GB),
             0,
             &req("wanted"),
+            NOW,
         ) {
             Plan::Refused { pinned_blockers, .. } => {
                 assert_eq!(pinned_blockers, vec!["big-pinned on lmstudio"]);
@@ -451,6 +472,7 @@ mod tests {
             &machine(2 * GB),
             0,
             &req("wanted"),
+            NOW,
         ) {
             Plan::Refused { reason, .. } => {
                 assert!(reason.contains("pinned"), "{reason}");
@@ -473,6 +495,7 @@ mod tests {
             &machine(20 * GB),
             0,
             &req_switch("pinned", "b"),
+            NOW,
         ) {
             Plan::Actions(a) => {
                 assert!(matches!(
@@ -497,6 +520,7 @@ mod tests {
             &machine(2 * GB),
             0,
             &req("wanted"),
+            NOW,
         ) {
             Plan::Refused { pinned_blockers, .. } => {
                 assert!(pinned_blockers.is_empty(), "busy is not a pin");
@@ -519,6 +543,7 @@ mod tests {
             &machine(20 * GB),
             0,
             &req_switch("serving", "b"),
+            NOW,
         ) {
             Plan::Refused { reason, .. } => assert!(reason.contains("in flight"), "{reason}"),
             p => panic!("{p:?}"),
@@ -537,6 +562,7 @@ mod tests {
             &machine(20 * GB),
             0,
             &req_switch("a", "b"),
+            NOW,
         ) {
             Plan::Actions(a) => {
                 assert_eq!(a.len(), 2);
@@ -559,6 +585,7 @@ mod tests {
             &machine(20 * GB),
             0,
             &req("b"),
+            NOW,
         ) {
             Plan::Actions(a) => {
                 assert_eq!(a.len(), 1);
@@ -581,6 +608,7 @@ mod tests {
             &machine(3 * GB),
             0,
             &req("wanted"),
+            NOW,
         ) {
             Plan::Actions(a) => {
                 let unloads: Vec<&str> = a
@@ -612,6 +640,7 @@ mod tests {
             &machine(2 * GB),
             0,
             &req("wanted"),
+            NOW,
         ) {
             Plan::Refused { reason, .. } => assert!(reason.contains("needs"), "{reason}"),
             p => panic!("harmony cannot unload one model from llama.cpp: {p:?}"),
@@ -633,6 +662,7 @@ mod tests {
             &machine(20 * GB),
             0,
             &req_switch("on-llamacpp", "b"),
+            NOW,
         ) {
             Plan::Refused { reason, .. } => {
                 assert!(reason.contains("max_instances"), "name the ceiling: {reason}");
@@ -655,6 +685,7 @@ mod tests {
             &machine(0),
             0,
             &req("wanted"),
+            NOW,
         ) {
             Plan::AlreadyResident { model, .. } => assert_eq!(model, "wanted"),
             p => panic!("{p:?}"),
@@ -671,6 +702,7 @@ mod tests {
             &machine(20 * GB),
             0,
             &req("ghost"),
+            NOW,
         ) {
             Plan::Refused { reason, .. } => assert!(reason.contains("ghost"), "{reason}"),
             p => panic!("{p:?}"),
@@ -688,6 +720,7 @@ mod tests {
             &machine(6 * GB),
             8 * GB,
             &req("b"),
+            NOW,
         ) {
             Plan::Refused { .. } => {}
             p => panic!("6 GB free minus an 8 GB reserve is no room at all: {p:?}"),
@@ -707,6 +740,7 @@ mod tests {
             &machine(20 * GB),
             0,
             &req_switch("a", "b"),
+            NOW,
         ) {
             Plan::Actions(a) => {
                 assert!(matches!(
@@ -732,6 +766,7 @@ mod tests {
             &machine(3 * GB),
             0,
             &req("wanted"),
+            NOW,
         ) {
             Plan::Actions(a) => {
                 let unloads: Vec<&str> = a

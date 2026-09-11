@@ -33,6 +33,11 @@ enum Command {
         /// Where to append. Defaults to ~/.local/state/llm-harmony/observations.jsonl
         #[arg(long, value_name = "PATH")]
         record_path: Option<PathBuf>,
+        /// What each provider is allowed to take, read from its own argv,
+        /// environment, API or config -- never from harmony's config, which
+        /// deliberately keeps no copy.
+        #[arg(long)]
+        budgets: bool,
     },
     /// What is on disk, grouped by model.
     Ls {
@@ -46,6 +51,71 @@ enum Command {
         /// duplicates and never appear here.
         #[arg(long)]
         duplicates: bool,
+    },
+    /// Every provider that could serve this model, priced, with the row
+    /// `resolve` would pick marked.
+    ///
+    /// The resolver computes this list and returns one row of it. This prints
+    /// all of them, using the same prices and the same decision, so the menu
+    /// can never disagree with the verb.
+    Compare {
+        model: String,
+        #[arg(long, value_name = "TOKENS")]
+        context: Option<u32>,
+        #[arg(long, value_name = "BYTES")]
+        reserve: Option<u64>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Can these models be resident at the same time, and under which
+    /// assignment?
+    ///
+    /// Admission for a set rather than one model. Charges nothing for what is
+    /// already resident, charges each provider's own overhead once, and
+    /// refuses on a provider's model-count ceiling where the bytes would have
+    /// fitted.
+    Fit {
+        #[arg(required = true)]
+        models: Vec<String>,
+        #[arg(long, value_name = "TOKENS")]
+        context: Option<u32>,
+        #[arg(long, value_name = "BYTES")]
+        reserve: Option<u64>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Hold a model for a bounded time, so another caller's request cannot
+    /// evict it.
+    ///
+    /// A lease is a pin that expires. Like a pin it is a veto and never a
+    /// reservation: it cannot make a model resident and reserves no memory for
+    /// one.
+    Lease {
+        model: String,
+        /// Seconds. Harmony's own clock, and unrelated to `load --ttl`, which
+        /// sets the *provider's* idle timer -- this one only decides how long
+        /// harmony refuses to evict, and touches no server.
+        #[arg(long, value_name = "SECONDS")]
+        ttl: u64,
+        /// Who is holding it. Named in every refusal the lease causes, because
+        /// a hold nobody can trace is the failure mode worth preventing.
+        #[arg(long)]
+        owner: Option<String>,
+        /// Lease this provider's spelling only. Without it, every provider
+        /// that could serve the model is leased.
+        #[arg(long)]
+        provider: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Give a lease back before it expires. Will not clear a pin -- that is
+    /// `unpin`.
+    Release {
+        model: String,
+        #[arg(long)]
+        provider: Option<String>,
+        #[arg(long)]
+        json: bool,
     },
     /// Where should a request for this model go?
     Resolve {
@@ -133,12 +203,16 @@ enum Command {
         /// Why, for whoever reads `status` in a fortnight.
         #[arg(long)]
         note: Option<String>,
+        #[arg(long)]
+        json: bool,
     },
     /// Remove that protection.
     Unpin {
         model: String,
         #[arg(long)]
         provider: Option<String>,
+        #[arg(long)]
+        json: bool,
     },
     /// What each provider can actually do, probed rather than assumed.
     Verify {
@@ -155,15 +229,23 @@ enum Command {
         /// Print the agent instead of writing it.
         #[arg(long)]
         dry_run: bool,
+        #[arg(long)]
+        json: bool,
     },
     /// Start a provider and wait until it answers.
     Start {
         provider: String,
         #[arg(long, default_value_t = 60)]
         timeout_s: u64,
+        #[arg(long)]
+        json: bool,
     },
     /// Stop a provider harmony installed.
-    Stop { provider: String },
+    Stop {
+        provider: String,
+        #[arg(long)]
+        json: bool,
+    },
     /// What a model costs, and whether it fits right now.
     Estimate {
         model: String,
@@ -171,6 +253,32 @@ enum Command {
         context: Option<u32>,
         #[arg(long, value_name = "BYTES")]
         reserve: Option<u64>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Search Hugging Face for builds this machine could serve.
+    Search {
+        query: String,
+        /// Only repos publishing this format.
+        #[arg(long)]
+        format: Option<String>,
+        #[arg(long, default_value_t = 10)]
+        limit: usize,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Pull a built artifact from Hugging Face into a provider's store.
+    Add {
+        /// A Hugging Face repo id, e.g. `TheBloke/Qwen3-14B-GGUF`.
+        hf_id: String,
+        /// Which build. The smallest loadable one otherwise.
+        #[arg(long)]
+        file: Option<String>,
+        #[arg(long, default_value = "lmstudio")]
+        provider: String,
+        /// Answer the whole verdict and move nothing.
+        #[arg(long)]
+        dry_run: bool,
         #[arg(long)]
         json: bool,
     },
@@ -426,7 +534,7 @@ fn estimate_for(
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
-        Command::Status { json, config, timeout_ms, record, record_path } => {
+        Command::Status { json, config, timeout_ms, record, record_path, budgets } => {
             // Only two things may fail the command: a broken config and an
             // unreadable machine total. No provider can.
             let config = match Config::load(config.as_deref()) {
@@ -466,6 +574,23 @@ fn main() -> ExitCode {
                         Err(e) => eprintln!("llm-harmony: could not record: {e}"),
                     }
                 }
+            }
+
+            if budgets {
+                let rows: Vec<llm_harmony::budget::Budget> = ledger
+                    .rows
+                    .iter()
+                    .map(|r| {
+                        let readings = llm_harmony::budget::read(r, &http);
+                        llm_harmony::budget::budget(r.kind, &readings)
+                    })
+                    .collect();
+                if json {
+                    println!("{}", llm_harmony::render_budget::render_json(&rows, &machine));
+                } else {
+                    print!("{}", llm_harmony::render_budget::render(&rows, &machine));
+                }
+                return ExitCode::SUCCESS;
             }
 
             if json {
@@ -517,61 +642,107 @@ fn main() -> ExitCode {
                 llm_harmony::actuate::run::unload(&cfg, &http, machine, &model, kind, &options);
             emit(&report, json)
         }
-        Command::Pin { model, provider, note } => {
+        Command::Pin { model, provider, note, json } => {
             let targets = match pin_targets(&model, provider.as_deref()) {
                 Ok(t) => t,
                 Err(e) => {
-                    eprintln!("llm-harmony: {e}");
+                    if json {
+                        llm_harmony::render_lifecycle::Lifecycle::failed("pin", provider.as_deref().unwrap_or(""), e).print();
+                    } else {
+                        eprintln!("llm-harmony: {e}");
+                    }
                     return ExitCode::FAILURE;
                 }
             };
             let mut pins = llm_harmony::pins::Pins::load();
             let at = llm_harmony::record::now_unix();
-            let mut added = 0;
+            let mut rows = Vec::new();
             for (kind, id) in &targets {
-                if pins.add(llm_harmony::pins::Pin {
+                let changed = pins.add(llm_harmony::pins::Pin {
                     provider: *kind,
                     model: id.clone(),
                     at,
                     note: note.clone(),
-                }) {
-                    println!("pinned {id} on {}", kind.as_str());
-                    added += 1;
-                } else {
-                    println!("{id} on {} was already pinned", kind.as_str());
+                    owner: None,
+                    // A pin is a lease with no expiry. `lease` is the verb
+                    // that sets one.
+                    expires_at: None,
+                });
+                if !json {
+                    if changed {
+                        println!("pinned {id} on {}", kind.as_str());
+                    } else {
+                        println!("{id} on {} was already pinned", kind.as_str());
+                    }
                 }
+                rows.push(llm_harmony::render_lifecycle::Target {
+                    provider: kind.as_str().to_string(),
+                    model: id.clone(),
+                    changed,
+                });
             }
-            if added > 0 {
+            if rows.iter().any(|r| r.changed) {
                 if let Err(e) = pins.save() {
-                    eprintln!("llm-harmony: could not save pins: {e}");
+                    if json {
+                        llm_harmony::render_lifecycle::Lifecycle::failed("pin", "", format!("could not save pins: {e}")).print();
+                    } else {
+                        eprintln!("llm-harmony: could not save pins: {e}");
+                    }
                     return ExitCode::FAILURE;
                 }
             }
+            if json {
+                llm_harmony::render_lifecycle::Lifecycle::pins("pin", rows, llm_harmony::render_lifecycle::Outcome::Pinned).print();
+            }
             ExitCode::SUCCESS
         }
-        Command::Unpin { model, provider } => {
+        Command::Unpin { model, provider, json } => {
             let targets = match pin_targets(&model, provider.as_deref()) {
                 Ok(t) => t,
                 Err(e) => {
-                    eprintln!("llm-harmony: {e}");
+                    if json {
+                        llm_harmony::render_lifecycle::Lifecycle::failed("unpin", provider.as_deref().unwrap_or(""), e).print();
+                    } else {
+                        eprintln!("llm-harmony: {e}");
+                    }
                     return ExitCode::FAILURE;
                 }
             };
             let mut pins = llm_harmony::pins::Pins::load();
-            let mut removed = 0;
+            let mut rows = Vec::new();
             for (kind, id) in &targets {
-                if pins.remove(*kind, id) {
+                let changed = pins.remove(*kind, id);
+                if changed && !json {
                     println!("unpinned {id} on {}", kind.as_str());
-                    removed += 1;
                 }
+                rows.push(llm_harmony::render_lifecycle::Target {
+                    provider: kind.as_str().to_string(),
+                    model: id.clone(),
+                    changed,
+                });
             }
+            let removed = rows.iter().filter(|r| r.changed).count();
             if removed == 0 {
-                println!("nothing was pinned for `{model}`");
+                // Asking for a state you are already in is a success. A UI
+                // that clears a pin twice should hear "nothing changed", not
+                // an error it has to explain to someone.
+                if json {
+                    llm_harmony::render_lifecycle::Lifecycle::pins("unpin", rows, llm_harmony::render_lifecycle::Outcome::NotPinned).print();
+                } else {
+                    println!("nothing was pinned for `{model}`");
+                }
                 return ExitCode::SUCCESS;
             }
             if let Err(e) = pins.save() {
-                eprintln!("llm-harmony: could not save pins: {e}");
+                if json {
+                    llm_harmony::render_lifecycle::Lifecycle::failed("unpin", "", format!("could not save pins: {e}")).print();
+                } else {
+                    eprintln!("llm-harmony: could not save pins: {e}");
+                }
                 return ExitCode::FAILURE;
+            }
+            if json {
+                llm_harmony::render_lifecycle::Lifecycle::pins("unpin", rows, llm_harmony::render_lifecycle::Outcome::Unpinned).print();
             }
             ExitCode::SUCCESS
         }
@@ -642,16 +813,259 @@ fn main() -> ExitCode {
                 return ExitCode::SUCCESS;
             }
             if json {
-                let doc = serde_json::json!({
-                    "schema": llm_harmony::ledger::SCHEMA,
-                    "total_bytes": inv.total_bytes(),
-                    "artifact_count": inv.artifacts.len(),
-                    "models": inv.identities,
-                });
-                println!("{}", serde_json::to_string_pretty(&doc).unwrap());
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&llm_harmony::render_ls::document(&inv)).unwrap()
+                );
             } else {
                 print!("{}", llm_harmony::render_ls::render_ls(&inv));
             }
+            ExitCode::SUCCESS
+        }
+        Command::Compare { model, context, reserve, json } => {
+            let (config, machine) = match setup(None) {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("llm-harmony: {e}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            let reserve =
+                reserve.unwrap_or(llm_harmony::render_estimate::DEFAULT_RESERVE_BYTES);
+            let http = Http::new(Duration::from_millis(1500));
+            let ledger = Ledger::assemble(&config, &http, machine);
+            let inventory = llm_harmony::inventory::Inventory::scan_offline(None);
+            let candidates =
+                llm_harmony::resolve::identity::candidates(&ledger, &inventory, &model);
+            let corpus = llm_harmony::estimate::corpus::load_default();
+
+            // One price per candidate, through the ladder `estimate` and
+            // `resolve` already share -- a one-element slice, so no second
+            // pricing path can drift from the first.
+            let priced: Vec<llm_harmony::render_compare::Priced> = candidates
+                .iter()
+                .map(|c| llm_harmony::render_compare::Priced {
+                    candidate: c.clone(),
+                    estimate: estimate_for(
+                        &config,
+                        &ledger,
+                        &inventory,
+                        std::slice::from_ref(c),
+                        &model,
+                        context,
+                        &corpus,
+                    ),
+                })
+                .collect();
+
+            // And the pick comes from `decide` rather than from any ranking
+            // applied here.
+            let est = estimate_for(
+                &config, &ledger, &inventory, &candidates, &model, context, &corpus,
+            );
+            let decision =
+                llm_harmony::resolve::decide::decide(&candidates, &est, &machine, reserve);
+
+            if json {
+                println!(
+                    "{}",
+                    llm_harmony::render_compare::render_json(
+                        &model, &priced, &machine, reserve, &decision
+                    )
+                );
+            } else {
+                print!(
+                    "{}",
+                    llm_harmony::render_compare::render(
+                        &model, &priced, &machine, reserve, &decision
+                    )
+                );
+            }
+            // `compare` reports; it admits nothing, so it refuses nothing.
+            ExitCode::SUCCESS
+        }
+        Command::Fit { models, context, reserve, json } => {
+            let (config, machine) = match setup(None) {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("llm-harmony: {e}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            let reserve =
+                reserve.unwrap_or(llm_harmony::render_estimate::DEFAULT_RESERVE_BYTES);
+            let http = Http::new(Duration::from_millis(1500));
+            let ledger = Ledger::assemble(&config, &http, machine);
+            let inventory = llm_harmony::inventory::Inventory::scan_offline(None);
+            let corpus = llm_harmony::estimate::corpus::load_default();
+            let baselines = llm_harmony::estimate::baseline::all(&corpus);
+            let budgets: Vec<llm_harmony::budget::Budget> = ledger
+                .rows
+                .iter()
+                .map(|r| {
+                    let readings = llm_harmony::budget::read(r, &http);
+                    llm_harmony::budget::budget(r.kind, &readings)
+                })
+                .collect();
+            let running: Vec<llm_harmony::provider::ProviderKind> = ledger
+                .rows
+                .iter()
+                .filter(|r| matches!(r.outcome, llm_harmony::ledger::Outcome::Ok(_)))
+                .map(|r| r.kind)
+                .collect();
+            let pins = llm_harmony::pins::Pins::load();
+
+            let cands =
+                |m: &str| llm_harmony::resolve::identity::candidates(&ledger, &inventory, m);
+            let price = |c: &llm_harmony::resolve::identity::Candidate, m: &str| {
+                estimate_for(
+                    &config,
+                    &ledger,
+                    &inventory,
+                    std::slice::from_ref(c),
+                    m,
+                    context,
+                    &corpus,
+                )
+            };
+            let inputs = llm_harmony::fit::Inputs {
+                candidates: &cands,
+                price: &price,
+                baselines: &baselines,
+                budgets: &budgets,
+                running: &running,
+                machine: &machine,
+                reserve_bytes: reserve,
+                pins: &pins,
+                now: llm_harmony::record::now_unix(),
+            };
+            let plan = llm_harmony::fit::plan(&models, &inputs);
+            let fits = plan.verdict == llm_harmony::fit::Verdict::Fits;
+            if json {
+                println!("{}", llm_harmony::render_fit::render_json(&models, &plan));
+            } else {
+                print!("{}", llm_harmony::render_fit::render(&plan));
+            }
+            // A caller has to be able to tell "this set is possible" from
+            // "it is not" without parsing prose, as `resolve` already allows.
+            if fits { ExitCode::SUCCESS } else { ExitCode::FAILURE }
+        }
+        Command::Lease { model, ttl, owner, provider, json } => {
+            let targets = match pin_targets(&model, provider.as_deref()) {
+                Ok(t) => t,
+                Err(e) => {
+                    eprintln!("llm-harmony: {e}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            let mut pins = llm_harmony::pins::Pins::load();
+            let now = llm_harmony::record::now_unix();
+            pins.sweep(now);
+            let expires_at = now + ttl;
+            let mut rows = Vec::new();
+            let mut refused = false;
+            for (kind, id) in &targets {
+                let outcome = pins.lease(llm_harmony::pins::Pin {
+                    provider: *kind,
+                    model: id.clone(),
+                    at: now,
+                    note: None,
+                    owner: owner.clone(),
+                    expires_at: Some(expires_at),
+                });
+                use llm_harmony::pins::LeaseOutcome::*;
+                if outcome == RefusedPinned {
+                    refused = true;
+                }
+                if !json {
+                    let left = llm_harmony::pins::human_seconds(ttl);
+                    match outcome {
+                        Taken => println!("leased {id} on {} for {left}", kind.as_str()),
+                        Extended => println!("extended the lease on {id} on {} to {left}", kind.as_str()),
+                        AlreadyLonger => println!("{id} on {} is already leased for longer", kind.as_str()),
+                        RefusedPinned => println!(
+                            "{id} on {} is pinned; leaving the pin alone (a lease would be a downgrade)",
+                            kind.as_str()
+                        ),
+                    }
+                }
+                rows.push(serde_json::json!({
+                    "provider": kind.as_str(),
+                    "model": id,
+                    "outcome": format!("{outcome:?}").to_lowercase(),
+                }));
+            }
+            if let Err(e) = pins.save() {
+                eprintln!("llm-harmony: could not save pins: {e}");
+                return ExitCode::FAILURE;
+            }
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "schema": 1,
+                        "verb": "lease",
+                        "expires_at": expires_at,
+                        "owner": owner,
+                        "targets": rows,
+                    })
+                );
+            }
+            // Every target refused means nothing was leased, which a caller
+            // must be able to see in the exit code.
+            if refused && rows.len() == 1 { ExitCode::FAILURE } else { ExitCode::SUCCESS }
+        }
+        Command::Release { model, provider, json } => {
+            let targets = match pin_targets(&model, provider.as_deref()) {
+                Ok(t) => t,
+                Err(e) => {
+                    eprintln!("llm-harmony: {e}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            let mut pins = llm_harmony::pins::Pins::load();
+            let now = llm_harmony::record::now_unix();
+            pins.sweep(now);
+            let mut rows = Vec::new();
+            let mut released = 0usize;
+            for (kind, id) in &targets {
+                let outcome = pins.release(*kind, id);
+                use llm_harmony::pins::ReleaseOutcome::*;
+                if outcome == Released {
+                    released += 1;
+                }
+                if !json {
+                    match outcome {
+                        Released => println!("released {id} on {}", kind.as_str()),
+                        NotHeld => {}
+                        WasPinned => println!(
+                            "{id} on {} is pinned, not leased -- use `unpin`",
+                            kind.as_str()
+                        ),
+                    }
+                }
+                rows.push(serde_json::json!({
+                    "provider": kind.as_str(),
+                    "model": id,
+                    "outcome": format!("{outcome:?}").to_lowercase(),
+                }));
+            }
+            if released > 0 {
+                if let Err(e) = pins.save() {
+                    eprintln!("llm-harmony: could not save pins: {e}");
+                    return ExitCode::FAILURE;
+                }
+            } else if !json {
+                println!("nothing was leased for `{model}`");
+            }
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({"schema": 1, "verb": "release", "targets": rows})
+                );
+            }
+            // Asking for a state you are already in is a success, the posture
+            // `unpin` already takes.
             ExitCode::SUCCESS
         }
         Command::Resolve { model, context, reserve, json } => {
@@ -696,11 +1110,15 @@ fn main() -> ExitCode {
             }
             if denied { ExitCode::FAILURE } else { ExitCode::SUCCESS }
         }
-        Command::Install { provider, dry_run } => {
+        Command::Install { provider, dry_run, json } => {
             let p = match provider_config(&provider) {
                 Ok(p) => p,
                 Err(e) => {
-                    eprintln!("llm-harmony: {e}");
+                    if json {
+                        llm_harmony::render_lifecycle::Lifecycle::failed("install", &provider, e).print();
+                    } else {
+                        eprintln!("llm-harmony: {e}");
+                    }
                     return ExitCode::FAILURE;
                 }
             };
@@ -710,55 +1128,116 @@ fn main() -> ExitCode {
             let xml = match llm_harmony::launch::plist::for_provider(&p, &path_env) {
                 Ok(x) => x,
                 Err(e) => {
-                    eprintln!("llm-harmony: {e}");
+                    if json {
+                        llm_harmony::render_lifecycle::Lifecycle::failed("install", &provider, e).print();
+                    } else {
+                        eprintln!("llm-harmony: {e}");
+                    }
                     return ExitCode::FAILURE;
                 }
             };
             let Some(dest) = llm_harmony::launch::plist::path(&p.label()) else {
-                eprintln!("llm-harmony: cannot locate ~/Library/LaunchAgents");
+                let msg = "cannot locate ~/Library/LaunchAgents";
+                if json {
+                    llm_harmony::render_lifecycle::Lifecycle::failed("install", &provider, msg).print();
+                } else {
+                    eprintln!("llm-harmony: {msg}");
+                }
                 return ExitCode::FAILURE;
             };
             if dry_run {
-                println!("{xml}");
-                eprintln!("would write {}", dest.display());
+                if json {
+                    // `changed: false` is the whole point of a dry run, and it
+                    // is the field a caller checks rather than the verb name.
+                    llm_harmony::render_lifecycle::Lifecycle::provider(
+                        "install",
+                        &provider,
+                        llm_harmony::render_lifecycle::Outcome::Planned {
+                            path: dest.display().to_string(),
+                            plist: xml,
+                        },
+                        false,
+                    )
+                    .print();
+                } else {
+                    println!("{xml}");
+                    eprintln!("would write {}", dest.display());
+                }
                 return ExitCode::SUCCESS;
             }
             // The one write outside harmony's own state directory. Never
             // silent: the destination is printed before the write happens.
-            eprintln!("writing {}", dest.display());
+            if !json {
+                eprintln!("writing {}", dest.display());
+            }
             if let Some(parent) = dest.parent() {
                 if let Err(e) = std::fs::create_dir_all(parent) {
-                    eprintln!("llm-harmony: {e}");
+                    if json {
+                        llm_harmony::render_lifecycle::Lifecycle::failed("install", &provider, e.to_string()).print();
+                    } else {
+                        eprintln!("llm-harmony: {e}");
+                    }
                     return ExitCode::FAILURE;
                 }
             }
             if let Err(e) = std::fs::write(&dest, xml) {
-                eprintln!("llm-harmony: {e}");
+                if json {
+                    llm_harmony::render_lifecycle::Lifecycle::failed("install", &provider, e.to_string()).print();
+                } else {
+                    eprintln!("llm-harmony: {e}");
+                }
                 return ExitCode::FAILURE;
             }
             match llm_harmony::launch::launchctl::bootstrap(&dest) {
                 Ok(()) => {
-                    println!("installed {}", p.label());
+                    if json {
+                        llm_harmony::render_lifecycle::Lifecycle::provider(
+                            "install",
+                            &provider,
+                            llm_harmony::render_lifecycle::Outcome::Installed { path: dest.display().to_string() },
+                            true,
+                        )
+                        .print();
+                    } else {
+                        println!("installed {}", p.label());
+                    }
                     ExitCode::SUCCESS
                 }
                 Err(e) => {
-                    eprintln!("llm-harmony: {e}");
+                    if json {
+                        llm_harmony::render_lifecycle::Lifecycle::failed("install", &provider, e).print();
+                    } else {
+                        eprintln!("llm-harmony: {e}");
+                    }
                     ExitCode::FAILURE
                 }
             }
         }
-        Command::Start { provider, timeout_s } => {
+        Command::Start { provider, timeout_s, json } => {
             let p = match provider_config(&provider) {
                 Ok(p) => p,
                 Err(e) => {
-                    eprintln!("llm-harmony: {e}");
+                    if json {
+                        llm_harmony::render_lifecycle::Lifecycle::failed("start", &provider, e).print();
+                    } else {
+                        eprintln!("llm-harmony: {e}");
+                    }
                     return ExitCode::FAILURE;
                 }
             };
             let label = p.label();
-            if let Err(e) = llm_harmony::launch::launchctl::kickstart(&label) {
-                eprintln!("llm-harmony: {e}");
-                eprintln!("  has it been installed? try `llm-harmony install {provider}`");
+            // `start`, not `kickstart`: `stop` boots the service out of the
+            // domain entirely, so the obvious stop/start pair needs the agent
+            // bootstrapped again first. See `launchctl::start`.
+            let plist = llm_harmony::launch::plist::path(&label).unwrap_or_default();
+            if let Err(e) = llm_harmony::launch::launchctl::start(&label, &plist) {
+                let hint = format!("{e}; has it been installed? try `llm-harmony install {provider}`");
+                if json {
+                    llm_harmony::render_lifecycle::Lifecycle::failed("start", &provider, hint).print();
+                } else {
+                    eprintln!("llm-harmony: {e}");
+                    eprintln!("  has it been installed? try `llm-harmony install {provider}`");
+                }
                 return ExitCode::FAILURE;
             }
             let http = Http::new(Duration::from_millis(1500));
@@ -770,41 +1249,90 @@ fn main() -> ExitCode {
                 Duration::from_secs(timeout_s),
             ) {
                 Ok(took) => {
-                    println!("{} answered after {:.1}s", p.kind, took.as_secs_f64());
+                    if json {
+                        // "Started" and "answering" are not the same claim.
+                        // Only the second one is reported as ready, and the
+                        // wait is carried so a UI shows what it cost.
+                        llm_harmony::render_lifecycle::Lifecycle::provider(
+                            "start",
+                            &provider,
+                            llm_harmony::render_lifecycle::Outcome::Ready {
+                                url: p.url.clone(),
+                                took_s: took.as_secs(),
+                            },
+                            true,
+                        )
+                        .print();
+                    } else {
+                        println!("{} answered after {:.1}s", p.kind, took.as_secs_f64());
+                    }
                     ExitCode::SUCCESS
                 }
                 Err(e) => {
                     // Launched is not serving. The reason is in the logs the
                     // agent writes, so name them rather than guessing.
-                    eprintln!("llm-harmony: {e}");
-                    if let Some(code) = llm_harmony::launch::launchctl::last_exit_code(&label) {
-                        eprintln!("  the start command exited {code}{}", match code {
-                            127 => " (command not found -- was it installed with the right PATH?)",
-                            126 => " (not executable)",
-                            _ => "",
-                        });
+                    let code = llm_harmony::launch::launchctl::last_exit_code(&label);
+                    let log = format!("~/.local/state/llm-harmony/{label}.err.log");
+                    if json {
+                        llm_harmony::render_lifecycle::Lifecycle::provider(
+                            "start",
+                            &provider,
+                            llm_harmony::render_lifecycle::Outcome::Failed {
+                                reason: e,
+                                exit_code: code,
+                                log: Some(log),
+                            },
+                            false,
+                        )
+                        .print();
+                    } else {
+                        eprintln!("llm-harmony: {e}");
+                        if let Some(code) = code {
+                            eprintln!("  the start command exited {code}{}", match code {
+                                127 => " (command not found -- was it installed with the right PATH?)",
+                                126 => " (not executable)",
+                                _ => "",
+                            });
+                        }
+                        eprintln!("  logs: {log}");
                     }
-                    eprintln!("  logs: ~/.local/state/llm-harmony/{label}.err.log");
                     ExitCode::FAILURE
                 }
             }
         }
-        Command::Stop { provider } => {
+        Command::Stop { provider, json } => {
             let p = match provider_config(&provider) {
                 Ok(p) => p,
                 Err(e) => {
-                    eprintln!("llm-harmony: {e}");
+                    if json {
+                        llm_harmony::render_lifecycle::Lifecycle::failed("stop", &provider, e).print();
+                    } else {
+                        eprintln!("llm-harmony: {e}");
+                    }
                     return ExitCode::FAILURE;
                 }
             };
             match llm_harmony::launch::launchctl::bootout(&p.label()) {
                 Ok(()) => {
-                    println!("stopped {}", p.label());
+                    if json {
+                        llm_harmony::render_lifecycle::Lifecycle::provider("stop", &provider, llm_harmony::render_lifecycle::Outcome::Stopped, true)
+                            .print();
+                    } else {
+                        println!("stopped {}", p.label());
+                    }
                     ExitCode::SUCCESS
                 }
                 Err(e) => {
-                    eprintln!("llm-harmony: {e}");
-                    eprintln!("  a provider harmony did not install is not harmony's to stop");
+                    // Passed through rather than flattened: the page can say
+                    // *why* instead of "failed".
+                    let reason =
+                        format!("{e}; a provider harmony did not install is not harmony's to stop");
+                    if json {
+                        llm_harmony::render_lifecycle::Lifecycle::failed("stop", &provider, reason).print();
+                    } else {
+                        eprintln!("llm-harmony: {e}");
+                        eprintln!("  a provider harmony did not install is not harmony's to stop");
+                    }
                     ExitCode::FAILURE
                 }
             }
@@ -836,12 +1364,144 @@ fn main() -> ExitCode {
             let est =
                 estimate_for(&config, &ledger, &inventory, &candidates, &model, context, &corpus);
             if json {
-                println!("{}", serde_json::to_string_pretty(&est).unwrap());
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&llm_harmony::render_estimate::document(&est))
+                        .unwrap()
+                );
             } else {
                 print!(
                     "{}",
                     llm_harmony::render_estimate::render_estimate(&est, &machine, reserve)
                 );
+            }
+            ExitCode::SUCCESS
+        }
+        Command::Search { query, format, limit, json } => {
+            let machine = Machine::read().unwrap_or_else(|_| Machine::zero());
+            let http = Http::new(Duration::from_secs(20));
+            let mut doc = llm_harmony::intake::run::search(&http, &machine, &query, limit);
+            if let Some(want) = format.as_deref() {
+                let want = want.to_ascii_lowercase();
+                doc.hits.retain(|h| {
+                    h.files.iter().any(|f| format!("{:?}", f.format).to_ascii_lowercase() == want)
+                });
+            }
+            if json {
+                println!("{}", serde_json::to_string_pretty(&doc).unwrap());
+            } else {
+                for hit in &doc.hits {
+                    println!("{}", hit.repo);
+                    if hit.needs_conversion {
+                        // Shown, not hidden: a build exists and harmony cannot
+                        // use it yet, which is different from there being none.
+                        println!("  needs conversion (bf16 only)");
+                    }
+                    if let Some(f) = &hit.fit {
+                        println!("  {}", f.message());
+                    }
+                    if hit.provenance.is_warning() {
+                        println!("  ! {}", hit.provenance.message());
+                    }
+                }
+            }
+            ExitCode::SUCCESS
+        }
+        Command::Add { hf_id, file, provider, dry_run, json } => {
+            let kind: llm_harmony::provider::ProviderKind = match provider.parse() {
+                Ok(k) => k,
+                Err(e) => {
+                    eprintln!("llm-harmony: {e}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            let machine = Machine::read().unwrap_or_else(|_| Machine::zero());
+            let http = Http::new(Duration::from_secs(20));
+            let mut doc = llm_harmony::intake::run::plan_add(
+                &http, &machine, &hf_id, file.as_deref(), kind,
+            );
+
+            let refused = matches!(
+                doc.outcome,
+                llm_harmony::intake::run::AddOutcome::Refused { .. }
+            );
+            if dry_run || refused {
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&doc).unwrap());
+                } else {
+                    for w in &doc.warnings {
+                        eprintln!("! {w}");
+                    }
+                    match &doc.outcome {
+                        llm_harmony::intake::run::AddOutcome::Refused { reason } => {
+                            eprintln!("refused: {reason}");
+                        }
+                        _ => {
+                            println!("{} -> {}", doc.file, doc.target_dir.clone().unwrap_or_default());
+                            if let Some(f) = &doc.fit {
+                                println!("{}", f.message());
+                            }
+                        }
+                    }
+                }
+                return if refused { ExitCode::FAILURE } else { ExitCode::SUCCESS };
+            }
+
+            // Past every refusal this verb can make. Only now do bytes move.
+            let dir = std::path::PathBuf::from(doc.target_dir.clone().unwrap_or_default());
+            let agent = llm_harmony::intake::download::transfer_agent();
+            let mut emit = |p: llm_harmony::intake::download::Progress| {
+                if json {
+                    p.print();
+                } else if let llm_harmony::intake::download::Progress::Advanced {
+                    bytes_done, bytes_total,
+                } = p
+                {
+                    let pct = bytes_total
+                        .map(|t| format!(" ({}%)", bytes_done * 100 / t.max(1)))
+                        .unwrap_or_default();
+                    eprintln!("  {}{pct}", llm_harmony::render::human_bytes(bytes_done));
+                }
+            };
+            for w in &doc.warnings {
+                if !json {
+                    eprintln!("! {w}");
+                }
+            }
+            // Every part, in order. A sharded build is one thing to load and
+            // several things to fetch, and stopping after the first would
+            // leave a directory that looks populated and loads nothing.
+            let mut last = std::path::PathBuf::new();
+            for name in &doc.files {
+                let url = llm_harmony::intake::hf::download_url(&hf_id, name);
+                match llm_harmony::intake::download::fetch(&agent, &url, &dir, name, &mut emit) {
+                    Ok(path) => last = path,
+                    Err(e) => {
+                        let failed = llm_harmony::intake::download::Progress::Failed {
+                            file: name.clone(),
+                            reason: e.clone(),
+                        };
+                        if json {
+                            failed.print();
+                        }
+                        doc.outcome =
+                            llm_harmony::intake::run::AddOutcome::Refused { reason: e.clone() };
+                        if json {
+                            println!("{}", serde_json::to_string_pretty(&doc).unwrap());
+                        } else {
+                            eprintln!("llm-harmony: {e}");
+                        }
+                        return ExitCode::FAILURE;
+                    }
+                }
+            }
+            doc.outcome = llm_harmony::intake::run::AddOutcome::Added {
+                path: last.display().to_string(),
+            };
+            if json {
+                println!("{}", serde_json::to_string_pretty(&doc).unwrap());
+            } else {
+                println!("added {}", last.display());
             }
             ExitCode::SUCCESS
         }

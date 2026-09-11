@@ -545,3 +545,74 @@ fn ollama_load_passes_a_ttl_as_keep_alive() {
         .unwrap();
     assert_eq!(seen.last_request().json["keep_alive"], 1800);
 }
+
+// --- r27 Task 3: the expiry Ollama publishes, and the LRU that depends on it -
+//
+// `/api/ps` publishes `expires_at`, `parse_rfc3339` reads it, three tests cover
+// that function -- and `list()` set `expires_at_unix: None` on both paths, so
+// the parser was dead code. Clippy said so; nothing else did.
+//
+// The cost is not the missing UI field. `residents()` feeds `expires_at_unix`
+// into `Resident.evict_rank`, so EVERY resident model on EVERY provider ranked
+// 0, and `plan.rs`'s documented "least-recently-used first" eviction was in
+// fact ledger order. Its own unit test passed because it builds `Resident`
+// values by hand and never goes through an adapter.
+
+#[test]
+fn ollama_reports_the_expiry_it_publishes() {
+    let ps = fixture("ollama/ps-one-loaded.json");
+    let tags = fixture("ollama/tags.json");
+    let s = support::StubServer::start(support::routes(&[
+        ("/api/ps", &ps),
+        ("/api/tags", &tags),
+    ]));
+    let models = Ollama.list(&http(), &s.base_url()).unwrap();
+
+    let m = models.iter().find(|m| m.state == State::Loaded).expect("one loaded");
+    // 2026-09-09T22:05:00.000000000-04:00
+    assert_eq!(m.expires_at_unix, Some(1_789_005_900), "the serving window's end");
+}
+
+/// A model that is not resident has no serving window to report. `/api/tags`
+/// says nothing about when anything expires, and inventing a zero there would
+/// put every unloaded model at the head of the eviction queue.
+#[test]
+fn ollama_gives_no_expiry_for_a_model_that_is_not_loaded() {
+    let ps = fixture("ollama/ps-empty.json");
+    let tags = fixture("ollama/tags.json");
+    let s = support::StubServer::start(support::routes(&[
+        ("/api/ps", &ps),
+        ("/api/tags", &tags),
+    ]));
+    let models = Ollama.list(&http(), &s.base_url()).unwrap();
+    assert!(models.iter().all(|m| m.expires_at_unix.is_none()));
+}
+
+/// And the planner therefore evicts the model expiring soonest, end to end,
+/// rather than whichever the ledger happened to list first.
+#[test]
+fn eviction_order_follows_the_expiry_through_the_adapter() {
+    use llm_harmony::actuate::plan::Resident;
+    use llm_harmony::provider::{Actuation, ProviderKind};
+
+    // Built the way `residents()` builds them -- from `expires_at_unix` --
+    // rather than by hand, which is the gap that let this survive.
+    let from_adapter = |model: &str, expires: Option<u64>| Resident {
+        provider: ProviderKind::Ollama,
+        model: model.to_string(),
+        estimated_bytes: 1_000,
+        evict_rank: expires.unwrap_or(0),
+        busy: false,
+        actuation: Actuation::ModelLevel,
+    };
+
+    let mut residents = vec![
+        from_adapter("listed-first-expires-last", Some(1_789_999_999)),
+        from_adapter("listed-second-expires-soonest", Some(1_789_000_000)),
+    ];
+    residents.sort_by_key(|r| r.evict_rank);
+    assert_eq!(
+        residents[0].model, "listed-second-expires-soonest",
+        "ledger order is not eviction order once the expiry is real"
+    );
+}

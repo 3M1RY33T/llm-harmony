@@ -143,3 +143,23 @@ mod tests {
         assert!(!out.contains("FIT"), "no verdict without a measurement: {out}");
     }
 }
+
+/// The estimate as a versioned document.
+///
+/// `--json` emitted a bare `Estimate`, which is the one document here that has
+/// already changed shape once — slice 4 had two rungs on the ladder where this
+/// has three. Anything crossing a process boundary needs to say which it is.
+///
+/// Wrapped rather than adding the field to `Estimate` itself: that type is also
+/// what the observation corpus stores, and a schema stamped into every recorded
+/// sample would version the wrong thing.
+pub fn document(est: &crate::estimate::estimator::Estimate) -> serde_json::Value {
+    let mut doc = serde_json::to_value(est).unwrap_or_else(|_| serde_json::json!({}));
+    if let Some(map) = doc.as_object_mut() {
+        map.insert("schema".into(), serde_json::json!(SCHEMA));
+    }
+    doc
+}
+
+/// Bumped when a field is removed or changes meaning; adding one is not a bump.
+pub const SCHEMA: u32 = 1;

@@ -45,11 +45,18 @@ impl Machine {
         })
     }
 
+    /// Memory not currently in use. Named rather than open-coded because the
+    /// planner, the renderer and intake all want the same subtraction, and a
+    /// `-` written three times is a `-` that gets written wrong once.
+    pub fn free_bytes(&self) -> u64 {
+        self.total_bytes.saturating_sub(self.used_bytes)
+    }
+
     pub fn free_fraction(&self) -> f64 {
         if self.total_bytes == 0 {
             return 0.0;
         }
-        (self.total_bytes.saturating_sub(self.used_bytes)) as f64 / self.total_bytes as f64
+        self.free_bytes() as f64 / self.total_bytes as f64
     }
 }
 

@@ -1,5 +1,6 @@
 pub mod computed;
 pub mod attribute;
+pub mod baseline;
 pub mod corpus;
 pub mod estimator;
 

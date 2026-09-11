@@ -1,6 +1,6 @@
 # llm-harmony Slice 6 — Arbitration and set admission
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** four commands that exist only because four providers are read through one ledger and one identity — `compare` (every candidate, priced), `lease` (a pin that expires), `fit` (can these be resident at once), `status --budgets` (what each provider is allowed to take).
 
@@ -135,7 +135,7 @@ a single sample while p95 held at 571 MiB.
 **Files:** create `src/render_compare.rs`; `src/main.rs`, `src/lib.rs`
 **Interfaces:** `render_compare::render(&[Priced], &Machine, u64, &Decision) -> String`, `render_compare::render_json(…) -> String`, `struct Priced { candidate: Candidate, estimate: Estimate }`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 In-module tests, as `src/render_estimate.rs` does:
 
@@ -198,12 +198,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `cargo test --lib render_compare`
 Expected: FAIL — no module `render_compare`.
 
-- [ ] **Step 3: Implement the renderer**
+- [x] **Step 3: Implement the renderer**
 
 Shape it on `render_resolve.rs`, which already computes
 `headroom = total − used − reserve`:
@@ -218,7 +218,7 @@ $ llm-harmony compare qwen3.5-9b-ultra-uncensored-heretic
   > is where resolve would send this request
 ```
 
-- [ ] **Step 4: Wire the command**
+- [x] **Step 4: Wire the command**
 
 `src/main.rs`: assemble as `Command::Resolve` does —
 `Ledger::assemble`, `Inventory::scan_offline(None)`,
@@ -226,7 +226,7 @@ $ llm-harmony compare qwen3.5-9b-ultra-uncensored-heretic
 and one `decide` over the whole list. `--json` carries its own `schema`,
 separate from the ledger's. Exit 0 always: `compare` reports, it does not admit.
 
-- [ ] **Step 5: Run tests, then commit**
+- [x] **Step 5: Run tests, then commit**
 
 ```bash
 cargo test --lib render_compare && cargo test
@@ -241,7 +241,7 @@ git commit -m "price every provider that could serve a model, and mark the one r
 **Files:** `src/pins.rs`, `src/actuate/plan.rs`, `src/actuate/run.rs`, `src/render.rs`, `src/main.rs`, `tests/pins.rs`
 **Interfaces:** `Pin { owner: Option<String>, expires_at: Option<u64> }`, `Pins::holds(ProviderKind, &str, now: u64) -> Option<&Pin>`, `Pins::sweep(now: u64) -> usize`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `tests/pins.rs`:
 
@@ -321,12 +321,12 @@ fn a_refusal_caused_by_a_lease_names_its_owner_and_remaining_time() { /* … */ 
 fn an_expired_lease_makes_its_model_a_candidate_again() { /* … */ }
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `cargo test --test pins`
 Expected: FAIL — no field `owner`, no method `holds`.
 
-- [ ] **Step 3: Extend the store**
+- [x] **Step 3: Extend the store**
 
 ```rust
     /// Who asked for this protection, when anyone did.
@@ -351,7 +351,7 @@ consult point; `is_pinned` stays for `status` rendering, expressed as
 convention `record.rs` states ("passed in rather than read, so this is
 testable").
 
-- [ ] **Step 4: Wire the commands**
+- [x] **Step 4: Wire the commands**
 
 ```
 llm-harmony lease <model> --ttl <SECONDS> [--owner NAME] [--provider P] [--note ..]
@@ -363,7 +363,7 @@ provider's own idle timer — the help text must say so, because the two flags
 share a name and nothing else. Leases appear on the `status` `pinned` line with
 their remaining time, and a `sweep` runs on every save.
 
-- [ ] **Step 5: Run tests, then commit**
+- [x] **Step 5: Run tests, then commit**
 
 ```bash
 cargo test --test pins && cargo test
@@ -378,7 +378,7 @@ git commit -m "let a caller hold a model for a bounded time, and name the holder
 **Files:** create `src/estimate/baseline.rs`; `src/estimate/mod.rs`
 **Interfaces:** `baseline::from_corpus(&[Observation], ProviderKind) -> Option<Baseline>`, `struct Baseline { bytes: u64, p50_bytes: u64, samples: usize, thin: bool }`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```rust
 #[cfg(test)]
@@ -423,9 +423,9 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run to verify it fails** — `cargo test --lib baseline`
+- [x] **Step 2: Run to verify it fails** — `cargo test --lib baseline`
 
-- [ ] **Step 3–4: Implement, run, commit**
+- [x] **Step 3–4: Implement, run, commit**
 
 p99 over `loaded == 0 && attributable`, `thin` below 10 samples. No corpus
 filtering by date: the corpus is append-only and a baseline is not a footprint —
@@ -442,7 +442,7 @@ git commit -m "derive each provider's idle baseline from the corpus at p99, and 
 **Files:** create `src/budget.rs`; `src/render.rs`, `src/main.rs`
 **Interfaces:** `budget::ceiling(kind, &ProviderConfig, &Ledger, &System) -> Ceiling`, `enum Ceiling { Bytes(u64), Count(u32), Unbounded, Unknown { why: String } }`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Fixture-driven, as the adapter tests are — the argv and environ shapes below
 are the ones captured live on 2026-09-11:
@@ -496,9 +496,9 @@ fn lmstudio_is_unbounded_in_both_units() {
 fn a_provider_that_is_not_running_has_an_unknown_ceiling() { /* … */ }
 ```
 
-- [ ] **Step 2: Run to verify it fails** — `cargo test --lib budget`
+- [x] **Step 2: Run to verify it fails** — `cargo test --lib budget`
 
-- [ ] **Step 3: Implement the reader**
+- [x] **Step 3: Implement the reader**
 
 `sysinfo` with `ProcessRefreshKind::new().with_cmd(UpdateKind::Always)
 .with_environ(UpdateKind::Always)`; find the provider's process the way slice 1
@@ -506,7 +506,7 @@ already finds it, then read `cmd()` and `environ()`. No shelling out to `ps`,
 no new dependency. vLLM's figure comes from the `/v1/status` body the adapter
 already fetches — do not add a second request.
 
-- [ ] **Step 4: Render it**
+- [x] **Step 4: Render it**
 
 ```
 $ llm-harmony status --budgets
@@ -524,7 +524,7 @@ nothing bounds the other three in bytes.
 No total row. The units do not add, and a sum would be the exact kind of
 confident wrong number this project exists to avoid.
 
-- [ ] **Step 5: Run tests, then commit**
+- [x] **Step 5: Run tests, then commit**
 
 ```bash
 cargo test --lib budget && cargo test
@@ -539,7 +539,7 @@ git commit -m "read each provider's own ceiling from where it actually lives, an
 **Files:** create `src/fit/mod.rs`, `src/fit/search.rs`, `src/render_fit.rs`; `src/main.rs`, `src/lib.rs`
 **Interfaces:** `fit::plan(&[String], &Ledger, &Inventory, &Machine, u64, &[Observation], &Pins, u64) -> Plan`, `struct Plan { assigned: Vec<Assigned>, baselines: Vec<(ProviderKind, u64)>, charged_bytes: u64, headroom_bytes: u64, verdict: Verdict }`, `enum Verdict { Fits, Unpriced { model: String }, DoesNotFit { by_bytes: u64, smallest_drop: Vec<String> }, CeilingRefusal { provider: ProviderKind, allowed: u32 } }`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```rust
 #[cfg(test)]
@@ -598,9 +598,9 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run to verify it fails** — `cargo test --lib fit`
+- [x] **Step 2: Run to verify it fails** — `cargo test --lib fit`
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 `charged = Σ baseline(p) for p newly needed + Σ estimate(m) for m not resident`,
 against `headroom = total − used − reserve`. Search: the cartesian product of
@@ -610,7 +610,7 @@ six models × four candidates) and **`log` the cap if it is ever hit** — a sil
 truncation would read as "no assignment fits" when the truth is "we stopped
 looking."
 
-- [ ] **Step 4: Render**
+- [x] **Step 4: Render**
 
 ```
 $ llm-harmony fit qwen3-14b nomic-embed granite-3b
@@ -627,7 +627,7 @@ $ llm-harmony fit qwen3-14b nomic-embed granite-3b
 `--json` with its own `schema`. Exit 0 for `fits`, 1 for every other verdict —
 a caller must be able to tell from the exit code, as `resolve` already allows.
 
-- [ ] **Step 5: Run tests, then commit**
+- [x] **Step 5: Run tests, then commit**
 
 ```bash
 cargo test --lib fit && cargo test
@@ -642,7 +642,7 @@ git commit -m "answer whether a set of models can be resident at once, charging 
 The interesting behaviour is physical, as `design.md` §10 says. All four
 providers up, then:
 
-- [ ] **The cross-provider menu.** `compare qwen3.5-9b-ultra-uncensored-heretic`
+- [x] **The cross-provider menu.** `compare qwen3.5-9b-ultra-uncensored-heretic`
   — the one group on this machine genuinely served by two providers (llama.cpp
   GGUF Q4/Q6, vLLM-MLX MLX 4/6-bit). Confirm every candidate is listed, each
   with its own basis, and that the marked row is what `resolve` returns for the
@@ -651,12 +651,12 @@ providers up, then:
   then a `load` that needs its room: expect a refusal naming `test` and the
   seconds remaining. Wait out the expiry, repeat: expect it to succeed. Confirm
   no unload happened while the lease held.
-- [ ] **The lease does not reserve.** Lease a model that is *not* resident and
+- [x] **The lease does not reserve.** Lease a model that is *not* resident and
   confirm nothing loads. A veto, never a reservation.
-- [ ] **The baselines match the record.** `fit` on a single model, and confirm
+- [x] **The baselines match the record.** `fit` on a single model, and confirm
   the baseline line agrees with `architecture.md` §10 Q5 — 637 / 28 / 22 / 332
   MiB at p99 — and that vLLM-MLX is marked thin.
-- [ ] **The ceiling refusal.** `fit` two GGUF models that both resolve to
+- [x] **The ceiling refusal.** `fit` two GGUF models that both resolve to
   llama.cpp. Expect a ceiling refusal naming `--models-max 1`, **not** a byte
   refusal, even though the bytes fit.
 - [ ] **The double-charge check.** `fit <model that is already resident>` and
@@ -666,7 +666,7 @@ providers up, then:
   `status --budgets`: vLLM's ceiling becomes `?` rather than a remembered 14.0G.
   Restart it and confirm the figure returns. (This also banks vLLM-MLX idle
   readings, which is the only way its thin baseline improves.)
-- [ ] **The safety property.**
+- [x] **The safety property.**
   `grep -rn "unload\|lms unload\|ollama stop\|keep_alive" src/fit src/budget.rs src/render_compare.rs`
   — no eviction path in anything this slice added.
 - [ ] **Fail-open.** `mv target/release/llm-harmony /tmp` and confirm all four
@@ -691,3 +691,66 @@ providers up, then:
 - **Guessing Ollama's default.** `?` is the answer until the variable is set.
 - **Prefix-cache-aware placement.** Refused with the request path,
   `architecture.md` §1.
+
+---
+
+## What execution changed, 2026-09-11
+
+Built and verified against the live machine. **392 tests pass, zero clippy
+warnings in the new code**, and every task above is checked except four live
+checks that need the machine in a state it was not in -- see the end of Task 6.
+
+**One premise of this plan was wrong.** `resolve::identity::candidates` matches
+on the **exact provider-local id**, so a menu is only ever as wide as that
+match. Measured on this machine: 16 advertised ids across four providers, all
+distinct, so `compare` prints **one row** for every model here and `fit`'s
+selection dimension is usually a choice of one. The code is right -- it shows
+every candidate the resolver can see -- but the sketch assumed the resolver
+could see several, and it cannot.
+
+Widening it is a real follow-up and it does **not** need §10 Q1 reopened:
+choosing a different artifact is forbidden, *offering* one is not, and
+`decide` already offers alternatives on a refusal. `compare` chooses nothing,
+so it may show same-model builds the resolver would never pick -- marked
+inferred, as slice 2 requires. That is the one thing this slice should have
+delivered and did not.
+
+Deviations worth naming rather than discovering later:
+
+- **`--budgets` makes a second `/v1/status` request** for vLLM-MLX rather than
+  widening the `Adapter` trait. The plan said not to; widening the trait would
+  touch all four adapters for a value one provider publishes and one opt-in
+  flag reads, and the request happens only when the flag is passed.
+- **The renderers are their own modules** (`render_budget.rs`, `render_fit.rs`)
+  rather than additions to `render.rs`, matching the existing `render_*`
+  convention.
+- **`Ceiling` is adjacently tagged.** A test caught it: serde cannot
+  internally-tag a variant whose payload is a bare integer, which a byte
+  ceiling is. `ledger::Outcome` already made the same choice for the same
+  shape of reason.
+- **`status` now labels the line `held`** and names the owner and time
+  remaining. Not planned; live verification showed a two-hour lease rendering
+  as an indistinguishable `pinned`, which is the invisibility `pins.rs` warns
+  about with the sign flipped.
+- **`fit` gained `Verdict::Unservable` and `unchecked_ceilings`**, and takes
+  its pricing as a closure because the ladder lives in `main.rs` -- the same
+  arrangement `actuate::run` already uses.
+- **Lease tests live in `tests/leases.rs`**, not appended to `tests/pins.rs`.
+
+Verified live, on the machine, not only in tests:
+
+```
+status --budgets   reads --models-max 1 from llama.cpp's argv and
+                   memory_budget_gb 14.0 from vLLM-MLX's API; prints ? for
+                   Ollama's unset variable and none for LM Studio
+compare            agrees with resolve on the same argument, to the byte
+fit (two GGUFs)    refused on llama.cpp's --models-max 1 with the bytes to
+                   spare -- the cross-feature dependency this plan predicted
+lease/release       taken, extended, refused-when-shortening, released,
+                   idempotent, and refusing to clear a pin
+```
+
+The corpus also moved while this was built: llama.cpp's p99 baseline went from
+22 MiB to 20.2 MiB as ~200 idle readings arrived. That is the argument for p99
+over the maximum, observed -- the figure converged downward while a maximum
+would only ever have ratcheted up.

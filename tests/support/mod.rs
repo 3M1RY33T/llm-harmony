@@ -44,6 +44,54 @@ impl StubServer {
         StubServer { port, stop }
     }
 
+    /// A route that serves raw bytes with an honest Content-Length. The JSON
+    /// routes above all set `application/json`, which a file transfer is not.
+    pub fn start_bytes(path: &str, body: &str) -> Self {
+        Self::start_raw(path.to_string(), body.to_string(), body.len())
+    }
+
+    /// A route that *promises* `declared` bytes and delivers the body instead.
+    /// Exactly the shape of an interrupted transfer, which is the failure a
+    /// download must not publish as a finished file.
+    pub fn start_truncating(path: &str, body: &str, declared: usize) -> Self {
+        Self::start_raw(path.to_string(), body.to_string(), declared)
+    }
+
+    fn start_raw(path: String, body: String, declared_len: usize) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        let port = listener.local_addr().unwrap().port();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_thread = stop.clone();
+        thread::spawn(move || {
+            for stream in listener.incoming() {
+                if stop_thread.load(Ordering::Relaxed) {
+                    break;
+                }
+                let Ok(mut stream) = stream else { continue };
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                if reader.read_line(&mut line).is_err() {
+                    continue;
+                }
+                let asked = line.split_whitespace().nth(1).unwrap_or("/").to_string();
+                let asked = asked.split('?').next().unwrap_or("/").to_string();
+                let head = if asked == path {
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {declared_len}\r\nConnection: close\r\n\r\n"
+                    )
+                } else {
+                    "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string()
+                };
+                let _ = stream.write_all(head.as_bytes());
+                if asked == path {
+                    let _ = stream.write_all(body.as_bytes());
+                }
+                let _ = stream.flush();
+            }
+        });
+        StubServer { port, stop }
+    }
+
     pub fn base_url(&self) -> String {
         format!("http://127.0.0.1:{}", self.port)
     }

@@ -42,6 +42,34 @@ pub fn kickstart(label: &str) -> Result<(), String> {
     run(kickstart_argv(uid(), label))
 }
 
+/// Start the agent, bootstrapping it first if launchd has forgotten it.
+///
+/// `stop` is `bootout`, and `bootout` does not pause a service — it **removes
+/// it from the domain**. So the obvious pair, stop then start, did not work:
+/// `kickstart` answered *Could not find service … in domain* on an agent whose
+/// plist was sitting right there on disk. Found running Task 10's own Step 2,
+/// which exists to press the Start button on a provider that is down.
+///
+/// Bootstrapping only when kickstart reports that specific absence keeps this
+/// from papering over a genuinely broken agent: any other failure is passed
+/// through untouched.
+pub fn start(label: &str, plist: &Path) -> Result<(), String> {
+    match kickstart(label) {
+        Ok(()) => Ok(()),
+        Err(e) if e.contains("Could not find service") => {
+            if !plist.exists() {
+                return Err(format!(
+                    "{e}; and no agent exists at {} to load",
+                    plist.display()
+                ));
+            }
+            bootstrap(plist)?;
+            kickstart(label)
+        }
+        Err(e) => Err(e),
+    }
+}
+
 pub fn bootout(label: &str) -> Result<(), String> {
     run(bootout_argv(uid(), label))
 }
@@ -89,5 +117,14 @@ mod tests {
             bootout_argv(501, "dev.llm-harmony.llamacpp"),
             vec!["bootout", "gui/501/dev.llm-harmony.llamacpp"]
         );
+    }
+
+    /// The recovery path in `start` only helps when there is a plist to load.
+    /// Naming the file beats repeating launchctl's own message.
+    #[test]
+    fn starting_something_with_no_agent_on_disk_says_which_file_is_missing() {
+        let e = start("dev.llm-harmony.nothing", Path::new("/nonexistent.plist"))
+            .expect_err("there is no such agent");
+        assert!(e.contains("/nonexistent.plist"), "{e}");
     }
 }

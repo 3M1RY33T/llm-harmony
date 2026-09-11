@@ -99,3 +99,96 @@ fn artifacts_that_are_one_allocation_group_together_despite_unlike_names() {
     assert_eq!(holding_both, 1, "the allocation must unify them: {:?}",
         merged.iter().map(|i| (&i.canonical, i.artifacts.len())).collect::<Vec<_>>());
 }
+
+// --- r27 Task 2: `ls --json` carries what its table computes ----------------
+//
+// The JSON form emitted artifact PATH STRINGS and nothing else, while the table
+// beside it derived builds, unique bytes and a safety class per model. A UI
+// reading the document had to re-derive all three, and one of them it cannot:
+// a pool symlink and its target are one allocation, so bytes summed from paths
+// double-counts every model llama.cpp shares with LM Studio.
+
+use llm_harmony::inventory::Inventory;
+
+/// LM Studio holding two quantisations of one model, with llama.cpp's pool
+/// symlinked into the Q4 — this machine's actual layout, in miniature.
+fn two_builds_one_aliased(t: &Tree) -> Inventory {
+    let q4 = t.file("lmstudio/TeichAI/Qwen3-14B-GGUF/qwen3-14b.q4_k_m.gguf", 8192);
+    t.file("lmstudio/TeichAI/Qwen3-14B-GGUF/qwen3-14b.q8_0.gguf", 16384);
+    t.link("pool/Qwen3-14B-Q4_K_M.gguf", &q4);
+    Inventory::scan_offline(Some(vec![
+        (Store::LmStudio, t.root.join("lmstudio")),
+        (Store::LlamaCpp, t.root.join("pool")),
+    ]))
+}
+
+fn model_row<'a>(doc: &'a serde_json::Value, canonical_fragment: &str) -> &'a serde_json::Value {
+    doc["models"]
+        .as_array()
+        .expect("models is an array")
+        .iter()
+        .find(|m| m["canonical"].as_str().is_some_and(|c| c.contains(canonical_fragment)))
+        .unwrap_or_else(|| panic!("no model matching `{canonical_fragment}` in {doc}"))
+}
+
+#[test]
+fn ls_json_reports_bytes_builds_and_safety_per_model() {
+    let t = Tree::new("ls-json-columns");
+    let inv = two_builds_one_aliased(&t);
+    let doc = llm_harmony::render_ls::document(&inv);
+
+    let row = model_row(&doc, "qwen3-14b");
+    assert_eq!(row["builds"], 2, "two quantisations, not every file in the repo: {row}");
+    assert_eq!(
+        row["bytes"], 8192 + 16384,
+        "the alias is one allocation and is counted once: {row}"
+    );
+    assert!(
+        row["safety"].as_str().is_some_and(|s| !s.is_empty()),
+        "every model carries the class the table prints: {row}"
+    );
+    assert!(row["provenance"].is_string() || row["provenance"].is_object(), "{row}");
+}
+
+#[test]
+fn ls_json_reports_each_artifact_with_its_format_store_and_bits() {
+    let t = Tree::new("ls-json-artifacts");
+    let inv = two_builds_one_aliased(&t);
+    let doc = llm_harmony::render_ls::document(&inv);
+
+    let arts = model_row(&doc, "qwen3-14b")["artifacts"].as_array().expect("artifacts array");
+    let q8 = arts
+        .iter()
+        .find(|a| a["path"].as_str().is_some_and(|p| p.contains("q8_0")))
+        .expect("the Q8 build is listed");
+
+    // Format and store are what decide which providers could serve a model,
+    // so they are what a hosting screen groups and filters by.
+    assert_eq!(q8["format"], "gguf");
+    assert_eq!(q8["store"], "lmstudio");
+    assert_eq!(q8["bits"], 8);
+    assert_eq!(q8["bytes"], 16384);
+    assert!(q8["id"].as_str().is_some_and(|s| !s.is_empty()));
+}
+
+#[test]
+fn ls_json_marks_links_so_reclaimable_space_is_not_double_counted() {
+    let t = Tree::new("ls-json-links");
+    let inv = two_builds_one_aliased(&t);
+    let doc = llm_harmony::render_ls::document(&inv);
+
+    let arts = model_row(&doc, "qwen3-14b")["artifacts"].as_array().unwrap();
+    let link = arts
+        .iter()
+        .find(|a| a["store"] == "llamacpp")
+        .expect("the pool entry is listed");
+    // Removing a link reclaims nothing. Saying so is the difference between a
+    // truthful reclaimable figure and one that counts the same bytes twice.
+    assert_eq!(link["is_link"], true, "{link}");
+
+    let summed: u64 = arts.iter().filter_map(|a| a["bytes"].as_u64()).sum();
+    assert!(
+        summed > model_row(&doc, "qwen3-14b")["bytes"].as_u64().unwrap(),
+        "summing artifact bytes double-counts, which is exactly why `bytes` is reported"
+    );
+}
