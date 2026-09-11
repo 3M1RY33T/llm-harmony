@@ -129,6 +129,43 @@ can account for but never act on"* — so the design survived; the table did not
 server, not by its presence in a README. `llm-harmony verify` prints the probed
 answer so this table never has to be trusted from memory again.
 
+### Actuation, verified against the machine
+
+2026-09-11, with all four providers up. What was exercised physically rather
+than in a test:
+
+**Admission refuses on real arithmetic.** A 14B Q4_K_M at an 8k window, against
+4.2 GB free:
+
+```
+$ llm-harmony load qwen3-14b-...-distill --context 8192 --reserve 0
+  refused    needs 10.4G but only 4.2G can be made available
+  estimate       10.4G   (Computed)
+```
+
+**A pin blocks eviction, and the refusal names it.** With a 358 MB model
+resident on Ollama and pinned:
+
+```
+  refused    needs 10.4G but only 3.7G can be made available;
+             pinned and therefore untouchable: nomic-embed-text:latest on ollama
+  pinned     nomic-embed-text:latest on ollama
+```
+
+Unpinning removes the clause. This is the case the pin design was most exposed
+on — a veto that cannot grant residency will cause refusals on a machine that
+looks half empty, and the refusal has to explain itself.
+
+**`unload` round-trips.** `llm-harmony unload nomic-embed-text:latest` reports
+the unload and exits 0; `status` then shows Ollama at zero resident.
+
+**Not yet verified, and honestly so:** a *successful* load, a cross-provider
+switch, and a watchdog abort. All three need headroom this machine does not
+currently have — 4.2 GB free with 4.5 GB of swap already in use, against a
+smallest priceable model of 10.4 GB. They need a calm machine, which is the
+same precondition the corpus needs before it can hold a trustworthy
+measurement.
+
 ### Loading an already-loaded model doubles it
 
 Found 2026-09-11, the first time anything called `lms load` twice. LM Studio

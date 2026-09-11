@@ -17,10 +17,11 @@ and it caught four defects that guesswork would have shipped.
 |---|---|
 | 1 — Read-only core | **Built.** 44 tests. `llm-harmony status` reads four providers and reports real footprint against machine capacity. Cannot unload by construction. |
 | 2 — Disk ledger + identity graph | **Built.** 39 tests. `ls` and `rm --dry-run` over 146 GB across five stores; cannot delete by construction. |
-| 3 — Measured estimator | **Planned.** See [`plans/2026-09-09-measured-estimator.md`](plans/2026-09-09-measured-estimator.md). |
-| 4 — `RESOLVE` | Sketched, blocked on an open question |
-| 5 — Intake and conversion | Sketched |
-| 6 — Hosting API | Sketched |
+| 3 — Measured estimator | **Built.** `estimate` predicts a footprint and returns a fit verdict. |
+| 4 — `RESOLVE` | **Built.** Placement by artifact identity; admission by the estimate ladder. |
+| 5 — Actuation | **Built.** 249 tests. `load`, `unload`, `switch`, `pin`/`unpin`, `verify`. Planned in [`plans/2026-09-10-actuation.md`](plans/2026-09-10-actuation.md). |
+| 6 — Intake and conversion | Sketched |
+| 7 — Hosting API | Sketched |
 
 ---
 
