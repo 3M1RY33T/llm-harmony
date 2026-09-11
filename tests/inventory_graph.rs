@@ -45,6 +45,29 @@ fn canonical_names_collapse_store_specific_decoration() {
     assert!(a.contains("qwen3-14b"), "publisher stripped, model kept: {a}");
 }
 
+/// The substring list lost to a quantisation name with a suffix. `-q6_k`
+/// matched inside `-Q6_K_XL` and left `_xl` fused to the model name, so a
+/// build of Qwen3.8-27B canonicalised to something no other build of
+/// Qwen3.8-27B could equal — and `siblings`, which asks this function whether
+/// two repos are one model, found nothing for it. Found 2026-09-11.
+#[test]
+fn a_quantisation_name_with_a_suffix_comes_off_whole() {
+    let decorated = canonical_name("igorvibes/Qwen3.8-27B-UD-Q6_K_XL-AWQ-MTP-mlx");
+    assert_eq!(decorated, "qwen3.8-27b", "every marker here is how, not what: {decorated}");
+    assert_eq!(canonical_name("Qwen/Qwen3.8-27B"), decorated);
+    assert_eq!(canonical_name("unsloth/Gemma-4-12B-IQ2_XXS-GGUF"), "gemma-4-12b");
+}
+
+/// And the opposite guard: a word that carries meaning is not a decoration.
+/// Stripping one is how two different models become one — inventory.md §5.
+#[test]
+fn a_word_that_names_the_model_survives() {
+    let a = canonical_name("TeichAI/Qwen3-14B-Claude-Distill-Q4_K_M.gguf");
+    let b = canonical_name("TeichAI/Qwen3-14B-Hermes-Distill-Q4_K_M.gguf");
+    assert_ne!(a, b, "two fine-tunes are two models: {a} vs {b}");
+    assert_eq!(a, "qwen3-14b-claude-distill");
+}
+
 #[test]
 fn mlx_and_gguf_builds_of_one_model_group_together() {
     let names = [

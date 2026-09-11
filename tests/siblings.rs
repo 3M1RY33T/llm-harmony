@@ -157,8 +157,45 @@ fn a_sibling_with_no_published_size_is_not_offered() {
 fn a_servable_source_needs_no_sibling() {
     let source = repo("x/M-GGUF", "org/M", "q4.gguf", 1, None);
     let other = repo("y/M-GGUF", "org/M", "q8.gguf", 2, None);
-    assert!(siblings::for_repo(&source, &[other], &[Format::Gguf]).is_empty(),
+    assert!(siblings::for_repo(&source, &[other], &[Format::Gguf], false).is_empty(),
             "nothing to replace");
+}
+
+/// Unless it will not fit. Found 2026-09-11: a 25.6 GiB MLX build of a 27B on
+/// a 24 GiB machine got no alternatives at all, because the guard asked
+/// whether the format was servable and stopped there. A format this machine
+/// serves and a size this machine can hold are different facts, and it is the
+/// second one that sends a reader looking for a smaller build.
+#[test]
+fn a_servable_source_too_big_for_the_machine_still_wants_a_smaller_build() {
+    let source = repo("x/M-GGUF", "org/M", "q8.gguf", 27_000_000_000, None);
+    let smaller = repo("y/M-GGUF", "org/M", "q4.gguf", 9_000_000_000, None);
+    let found = siblings::for_repo(&source, &[smaller], &[Format::Gguf], true);
+    assert_eq!(found.len(), 1, "the whole answer to a model that is too big");
+    assert_eq!(found[0].repo, "y/M-GGUF");
+}
+
+/// A build is a set, not a file. `edgefloor/Qwen-Qwen3.8-27B-MTPLX` publishes
+/// its model in three shards beside an 810 MB `mtp.safetensors`, and this
+/// module — which reimplemented "smallest servable file" rather than sharing
+/// the fold — offered 810 MB as a replacement for a 25 GB model. Found
+/// 2026-09-11.
+#[test]
+fn a_sharded_sibling_is_priced_as_the_whole_set_not_its_smallest_part() {
+    let source = repo("x/M-FP8", "org/M", "model.safetensors", 1, Some("fp8"));
+    let sharded = hf::repo_from_json(&json(
+        r#"{"id":"a/M-MLX","library_name":"mlx","cardData":{"base_model":"org/M"},
+            "siblings":[
+              {"rfilename":"model-00001-of-00003.safetensors","size":9000000000},
+              {"rfilename":"model-00002-of-00003.safetensors","size":9000000000},
+              {"rfilename":"model-00003-of-00003.safetensors","size":7000000000},
+              {"rfilename":"mtp.safetensors","size":810000000}]}"#,
+    ))
+    .unwrap();
+    let found = siblings::from_candidates(&source, &[sharded], &[Format::Mlx]);
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].bytes, 25_000_000_000, "three shards, not one, and not the head");
+    assert!(found[0].file.contains("3 parts"), "and it says so: {}", found[0].file);
 }
 
 #[test]

@@ -49,8 +49,8 @@ impl Finding {
                 format!("declares base_model {base_model}")
             }
             Finding::Mismatch { declared, expected } => format!(
-                "this repo declares base_model `{declared}`, but you asked for `{expected}` \
-                 — they are not builds of the same model"
+                "this repo declares base_model `{declared}`, which is not the lineage \
+                 `{expected}` is named after — its name and its metadata disagree"
             ),
             Finding::Undeclared { expected } if expected.is_empty() => {
                 "this repo declares no base_model, so nothing says what it is a build of"
@@ -83,6 +83,37 @@ impl Finding {
 ///
 /// Both sides are canonicalised before comparison, because legitimate names
 /// differ by publisher, format tag and quantisation in every real case.
+/// Does this repo's own name sit under the lineage it declares?
+///
+/// The check for `add`, where the user named a **repo** rather than a model.
+/// `check` cannot serve there: its `expected` is a model someone asked for,
+/// and passing the repo id instead compares a parent pointer to its own
+/// child's name. Every well-behaved quantisation then reads as a mismatch —
+/// `igorvibes/Qwen3.8-27B-UD-Q6_K_XL-AWQ-MTP-mlx` declaring `Qwen/Qwen3.8-27B`
+/// is the field working exactly as intended, and it was called "not builds of
+/// the same model" on 2026-09-11.
+///
+/// So the comparison is *descent*, not equality: a build of X is conventionally
+/// named after X, so the canonical form of the declared base should be a prefix
+/// of the repo's own. That keeps `inventory.md` §5's first case — a repo
+/// declaring a different model with a near-identical name — while staying
+/// quiet on the repos that are behaving.
+///
+/// Weaker than `check`, and honestly so. It is the most a repo id can support.
+pub fn check_repo(declared: Option<&str>, repo_id: &str) -> Finding {
+    let Some(declared) = declared.filter(|d| !d.trim().is_empty()) else {
+        // Still worth saying, and the case that actually bites: most
+        // hand-converted GGUF repos fill in nothing at all.
+        return Finding::Undeclared { expected: repo_id.to_string() };
+    };
+    let base = crate::inventory::identity::canonical_name(declared);
+    let own = crate::inventory::identity::canonical_name(repo_id);
+    if base.is_empty() || own.starts_with(&base) || base.starts_with(&own) {
+        return Finding::Declared { base_model: declared.to_string() };
+    }
+    Finding::Mismatch { declared: declared.to_string(), expected: repo_id.to_string() }
+}
+
 pub fn check(declared: Option<&str>, expected: Option<&str>) -> Finding {
     match (declared, expected) {
         (Some(d), _) if d.trim().is_empty() => Finding::Undeclared {

@@ -37,12 +37,26 @@ pub struct Sibling {
     pub base_model: String,
 }
 
-/// Siblings for a repo that cannot be served, or nothing.
+/// Siblings for a repo that will not run here, or nothing.
 ///
 /// A source that already loads here has nothing to replace, and returning
 /// alternatives for it would be answering a question nobody asked.
-pub fn for_repo(source: &hf::Repo, candidates: &[hf::Repo], servable: &[Format]) -> Vec<Sibling> {
-    if source.files.iter().any(|f| servable.contains(&f.format)) {
+///
+/// **"Loads here" is two questions, and this guard used to ask only one.**
+/// Until 2026-09-11 it returned nothing whenever the source published a
+/// servable *format*, which sent an MLX build of a 27B away empty-handed on a
+/// machine 1.6 GiB too small to hold it -- the exact case where a smaller
+/// build is the entire answer. A format this machine serves and a size this
+/// machine can hold are different facts, so `too_big` is passed in by the
+/// caller that priced it.
+pub fn for_repo(
+    source: &hf::Repo,
+    candidates: &[hf::Repo],
+    servable: &[Format],
+    too_big: bool,
+) -> Vec<Sibling> {
+    let servable_here = source.files.iter().any(|f| servable.contains(&f.format));
+    if servable_here && !too_big {
         return Vec::new();
     }
     from_candidates(source, candidates, servable)
@@ -63,26 +77,29 @@ pub fn from_candidates(
             continue;
         };
         // Confirmed by what the repo publishes, never by what it is called.
-        let Some((file, bytes)) = candidate
-            .files
-            .iter()
-            // `is_a_build` and not merely "servable format": a GGUF repo ships
-            // a projector and sometimes an importance matrix beside its
-            // builds, both loadable and neither a model. Picking the smallest
-            // servable file without this offered a 0.9 GB `mmproj-F32.gguf`
-            // as a replacement for a 27B model.
-            .filter(|f| f.is_a_build() && servable.contains(&f.format))
+        //
+        // `run::builds` and not a pass over `files`: **a build is a set, not a
+        // file.** `is_a_build` came down onto `RepoFile` so this module could
+        // share it, and that still left this module reimplementing the other
+        // half — the shard fold — which it got wrong in the same direction.
+        // `edgefloor/Qwen-Qwen3.8-27B-MTPLX` publishes its model in three
+        // parts, and "smallest servable file" offered one of them, 810 MB
+        // standing in for 25 GB. Found 2026-09-11, the third time that shape
+        // of bug surfaced in a day.
+        let Some((build, bytes)) = crate::intake::run::builds(candidate)
+            .into_iter()
+            .filter(|b| b.files.iter().all(|f| servable.contains(&f.format)))
             // A size the repo never published cannot be admitted against
             // either ledger, so it is not the cheap way out of anything.
-            .filter_map(|f| f.size_bytes.map(|b| (f, b)))
-            .min_by_key(|(_, b)| *b)
+            .filter_map(|b| b.bytes.map(|n| (b, n)))
+            .min_by_key(|(_, n)| *n)
         else {
             continue;
         };
         out.push(Sibling {
             repo: candidate.id.clone(),
-            file: file.name.clone(),
-            format: file.format,
+            file: build.label(),
+            format: build.files[0].format,
             bytes,
             base_model,
         });

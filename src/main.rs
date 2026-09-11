@@ -1765,7 +1765,19 @@ fn main() -> ExitCode {
             let query = source.base_model.clone().unwrap_or_else(|| hf_id.clone());
             let candidates =
                 llm_harmony::intake::hf::search(&http, &query, limit).unwrap_or_default();
-            let found = llm_harmony::intake::siblings::for_repo(&source, &candidates, &servable);
+            // A servable format this machine cannot hold is still a dead end,
+            // so price the source before deciding it has nothing to replace.
+            // `best_build` already groups shards, which the naive "smallest
+            // file" reading does not: six MLX shards are one model.
+            let machine = Machine::read().unwrap_or_else(|_| Machine::zero());
+            let too_big = llm_harmony::intake::run::best_build(&source)
+                // Memory only. No target directory is priced here, so the
+                // disk half of the verdict is meaningless and `memory_ok`
+                // is the half that was asked for.
+                .and_then(|b| llm_harmony::intake::run::price_build(&machine, &b, None))
+                .is_some_and(|f| !f.memory_ok());
+            let found =
+                llm_harmony::intake::siblings::for_repo(&source, &candidates, &servable, too_big);
 
             if json {
                 let doc = serde_json::json!({

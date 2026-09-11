@@ -43,7 +43,23 @@ pub struct Fit {
     /// above the loader's, and the pull it let through would be refused by
     /// `load` afterwards -- which is the exact failure this module's second
     /// ledger exists to prevent, arriving one step later.
+    ///
+    /// Saturates at zero, and that is why the three fields below exist. On a
+    /// machine with 7.9G free and an 8.0G reserve this is `0` -- a true
+    /// number that reads as a measurement of an empty machine, when what
+    /// happened is that the reserve swallowed the lot.
     pub free_memory_bytes: u64,
+    /// Free memory before the reserve came off. Carried so a headroom of zero
+    /// can say which of the two zeros it is.
+    pub free_before_reserve_bytes: u64,
+    /// What was held back.
+    pub reserve_bytes: u64,
+    /// Everything the machine has, ever, with every provider stopped.
+    ///
+    /// The one figure that separates "not right now" from "not here". Above
+    /// it, no unload and no reserve setting changes the answer, and a message
+    /// that invites someone to free memory is inviting them to fail.
+    pub machine_bytes: u64,
     /// The basis harmony priced it on: measured, computed or declared. Shown as
     /// a badge, because a refusal on a declared figure is one users otherwise
     /// meet cold.
@@ -53,6 +69,49 @@ pub struct Fit {
 impl Fit {
     pub fn ok(&self) -> bool {
         matches!(self.verdict, Verdict::Fits)
+    }
+
+    /// Did the *memory* ledger admit it? Disk is a separate fact, and callers
+    /// that only want to know whether this machine could hold the thing
+    /// should not have to care whether a target directory was priced.
+    pub fn memory_ok(&self) -> bool {
+        matches!(self.verdict, Verdict::Fits | Verdict::NoDisk)
+    }
+
+    /// Bigger than the whole machine, so no amount of freeing reaches it.
+    ///
+    /// Found 2026-09-11 on a 24 GiB Mac asked for a 25.6 GiB MLX build of a
+    /// 27B: the refusal said "0B is available", which is what a busy machine
+    /// looks like, so it read as "come back later". There is no later.
+    pub fn beyond_machine(&self) -> bool {
+        matches!(self.resident_bytes, Some(b) if b > self.machine_bytes)
+    }
+
+    /// Why memory said no, in the machine's own terms.
+    fn memory_clause(&self) -> String {
+        let res = self
+            .resident_bytes
+            .map(crate::render::human_bytes)
+            .unwrap_or_else(|| "an unknown amount".into());
+        if self.beyond_machine() {
+            return format!(
+                "loading it needs {res}, and this machine has {} in total \u{2014} \
+                 nothing that can be unloaded frees enough",
+                crate::render::human_bytes(self.machine_bytes),
+            );
+        }
+        if self.free_memory_bytes == 0 && self.free_before_reserve_bytes > 0 {
+            // Not an empty machine: a reserve wider than what is free.
+            return format!(
+                "loading it needs {res}, and the {} free is all inside the {} reserve",
+                crate::render::human_bytes(self.free_before_reserve_bytes),
+                crate::render::human_bytes(self.reserve_bytes),
+            );
+        }
+        format!(
+            "loading it needs {res} where {} is available",
+            crate::render::human_bytes(self.free_memory_bytes),
+        )
     }
 
     pub fn message(&self) -> String {
@@ -79,17 +138,12 @@ impl Fit {
             }
             Verdict::NoDisk => format!("needs {down} on disk but only {disk} is free"),
             Verdict::FitsDiskOnly | Verdict::Neither => {
-                let res = self
-                    .resident_bytes
-                    .map(crate::render::human_bytes)
-                    .unwrap_or_else(|| "an unknown amount".into());
-                let mem = crate::render::human_bytes(self.free_memory_bytes);
                 let disk_part = if matches!(self.verdict, Verdict::Neither) {
                     format!("needs {down} on disk but only {disk} is free, and ")
                 } else {
                     format!("{down} would land, but ")
                 };
-                format!("{disk_part}loading it needs {res} where {mem} is available")
+                format!("{disk_part}{}", self.memory_clause())
             }
         }
     }
@@ -131,6 +185,9 @@ pub fn admit(
         resident_bytes: estimate.bytes,
         free_disk_bytes,
         free_memory_bytes: headroom,
+        free_before_reserve_bytes: machine.free_bytes(),
+        reserve_bytes,
+        machine_bytes: machine.total_bytes,
         basis: format!("{:?}", estimate.basis).to_lowercase(),
     }
 }
@@ -239,6 +296,57 @@ mod tests {
             Verdict::FitsDiskOnly,
             "the reserve is not headroom a model may take"
         );
+    }
+
+    /// Found on a real machine 2026-09-11: a 24 GiB Mac, 7.9G free, an 8.0G
+    /// reserve, asked for a 25.6 GiB MLX build of a 27B. The refusal read
+    /// "loading it needs 25.6G where 0B is available" -- two wrong impressions
+    /// in one line. Nothing was going to free 25.6G on a 24 GiB machine, and
+    /// the machine was not out of memory; the reserve was simply wider than
+    /// what was free.
+    #[test]
+    fn a_model_larger_than_the_machine_says_so_rather_than_blaming_the_moment() {
+        const GB: u64 = 1024 * 1024 * 1024;
+        // machine() is 24 GiB total. 7.9 free, 8 held back: headroom is 0.
+        let m = machine(7_900 * GB / 1000);
+        let f = admit(25 * GB, &priced(25 * GB + GB / 2), &m, 500 * GB, 8 * GB);
+        assert_eq!(f.verdict, Verdict::FitsDiskOnly);
+        assert!(f.beyond_machine(), "25.5 GiB does not fit in 24 GiB, ever");
+        let msg = f.message();
+        assert!(msg.contains("in total"), "it names the machine's own ceiling: {msg}");
+        assert!(
+            !msg.contains("0B is available"),
+            "and never reports a saturated reserve as a measurement: {msg}"
+        );
+    }
+
+    /// The other zero. A model that WOULD fit on an idle machine, refused
+    /// because the reserve is currently wider than free memory -- which is a
+    /// thing that changes in a minute, and the message should say which of
+    /// the two situations the reader is in.
+    #[test]
+    fn a_reserve_wider_than_free_memory_names_the_reserve_not_an_empty_machine() {
+        const GB: u64 = 1024 * 1024 * 1024;
+        let f = admit(4 * GB, &priced(4 * GB), &machine(7 * GB), 500 * GB, 8 * GB);
+        assert_eq!(f.verdict, Verdict::FitsDiskOnly);
+        assert!(!f.beyond_machine(), "4 GiB fits in 24 GiB; the machine is not the wall");
+        assert_eq!(f.free_memory_bytes, 0);
+        let msg = f.message();
+        assert!(msg.contains("reserve"), "{msg}");
+        assert!(msg.contains("7.0G free"), "the free memory survives the saturation: {msg}");
+    }
+
+    /// Memory and disk are separate ledgers, and a caller that priced no
+    /// target directory is asking about exactly one of them.
+    #[test]
+    fn memory_ok_answers_for_memory_alone() {
+        const GB: u64 = 1024 * 1024 * 1024;
+        // No disk priced at all: `NoDisk`, and memory still said yes.
+        let f = admit(4 * GB, &priced(4 * GB), &machine(20 * GB), 0, 0);
+        assert_eq!(f.verdict, Verdict::NoDisk);
+        assert!(f.memory_ok());
+        let f = admit(4 * GB, &priced(30 * GB), &machine(20 * GB), 0, 0);
+        assert!(!f.memory_ok());
     }
 
     /// A pull can only ever be priced on the published file size -- see

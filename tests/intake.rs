@@ -424,3 +424,97 @@ fn an_unambiguous_extension_is_not_overruled_by_the_library_tag() {
     );
     assert_eq!(hf::repo_from_json(&v).unwrap().files[0].format, Format::Gguf);
 }
+
+// --- Two regressions found pulling a real MLX repo, 2026-09-11 -------------
+//
+// `igorvibes/Qwen3.8-27B-UD-Q6_K_XL-AWQ-MTP-mlx`: six safetensors shards
+// totalling 25.6 GB, correctly declaring `base_model: Qwen/Qwen3.8-27B`.
+// `add` answered with two warnings, both wrong, and planned a pull of 752 MB.
+
+/// Sharding is not a GGUF-only idea.
+///
+/// `shard_of` stripped `.gguf` and nothing else, so MLX safetensors shards —
+/// `model-00001-of-00006.safetensors` — were six separate "builds" and
+/// "smallest loadable" chose `…-00006-of-00006`: **752 MB of a 25.6 GB
+/// model**, one sixth, which nothing could ever load.
+///
+/// This is the exact failure `shard_of`'s own doc comment records against
+/// `unsloth/DeepSeek-V3.1-GGUF`, arriving through a door that opened the day
+/// MLX repos became recognisable at all (r29 Task 1): before that they were
+/// misclassified as PyTorch and refused, so the gap could not show.
+#[test]
+fn safetensors_shards_are_folded_into_one_build_like_gguf_shards() {
+    let v = json(
+        r#"{"id":"igorvibes/Q-mlx","library_name":"mlx",
+            "siblings":[
+              {"rfilename":"model-00001-of-00006.safetensors","size":5330000000},
+              {"rfilename":"model-00002-of-00006.safetensors","size":5350000000},
+              {"rfilename":"model-00003-of-00006.safetensors","size":5340000000},
+              {"rfilename":"model-00004-of-00006.safetensors","size":5320000000},
+              {"rfilename":"model-00005-of-00006.safetensors","size":5370000000},
+              {"rfilename":"model-00006-of-00006.safetensors","size":788940645}]}"#,
+    );
+    let repo = hf::repo_from_json(&v).unwrap();
+    let build = llm_harmony::intake::run::best_build(&repo).expect("one build");
+    assert_eq!(build.files.len(), 6, "a build is the SET, not its smallest part");
+    assert_eq!(build.bytes, Some(27_498_940_645));
+    assert!(build.label().contains("6 parts"), "{}", build.label());
+}
+
+/// And a repo that publishes several whole builds still offers a choice.
+#[test]
+fn unsharded_builds_are_still_separate_builds() {
+    let v = json(
+        r#"{"id":"x/y-GGUF","siblings":[
+              {"rfilename":"y-Q4_K_M.gguf","size":5000000000},
+              {"rfilename":"y-Q8_0.gguf","size":9000000000}]}"#,
+    );
+    let repo = hf::repo_from_json(&v).unwrap();
+    assert_eq!(llm_harmony::intake::run::builds(&repo).len(), 2);
+}
+
+/// A build's `base_model` points at its PARENT. Differing from the repo's own
+/// name is the entire point of the field, so comparing the two called every
+/// correctly-labelled quantisation a mismatch:
+///
+///   "this repo declares base_model `Qwen/Qwen3.8-27B`, but you asked for
+///    `igorvibes/Qwen3.8-27B-UD-Q6_K_XL-AWQ-MTP-mlx` — they are not builds of
+///    the same model"
+///
+/// They are. This module's own docstring had already recorded the rule — the
+/// call site in `plan_add` was not following it.
+#[test]
+fn a_build_naming_its_parent_is_not_a_mismatch() {
+    let v = json(
+        r#"{"id":"igorvibes/Qwen3.8-27B-UD-Q6_K_XL-AWQ-MTP-mlx","library_name":"mlx",
+            "cardData":{"base_model":"Qwen/Qwen3.8-27B"},
+            "siblings":[{"rfilename":"model-00001-of-00002.safetensors","size":5000000000},
+                        {"rfilename":"model-00002-of-00002.safetensors","size":5000000000}]}"#,
+    );
+    let repo = hf::repo_from_json(&v).unwrap();
+    let found = llm_harmony::intake::provenance::check_repo(
+        repo.base_model.as_deref(),
+        &repo.id,
+    );
+    assert!(!found.is_warning(), "{}", found.message());
+}
+
+/// The check that remains: a declaration the repo's own name does not sit
+/// under. `inventory.md` §5's first case — a repo declaring a *different*
+/// model with a near-identical name.
+#[test]
+fn a_declaration_the_repo_name_does_not_descend_from_is_still_a_warning() {
+    let found = llm_harmony::intake::provenance::check_repo(
+        Some("nightmedia/Qwen3-14B-DS9-USS-Defiant"),
+        "someone/Llama-3.3-70B-Instruct-GGUF",
+    );
+    assert!(found.is_warning(), "unrelated lineage must still be shown");
+    assert!(found.message().contains("Defiant"), "{}", found.message());
+}
+
+/// And declaring nothing is still worth saying, which is the case that
+/// actually bites: most hand-converted GGUF repos fill in nothing at all.
+#[test]
+fn a_repo_declaring_nothing_is_still_a_warning() {
+    assert!(llm_harmony::intake::provenance::check_repo(None, "x/y-GGUF").is_warning());
+}

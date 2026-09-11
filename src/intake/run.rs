@@ -118,7 +118,16 @@ fn shard_of(name: &str) -> Option<(String, u32)> {
     // missed: stripping two `-`-delimited fields from the end leaves `of` where
     // an index should be, `parse::<u32>()` fails, and every shard silently
     // looks like a whole build again.
-    let stem = name.strip_suffix(".gguf")?;
+    // Any weight extension, not just `.gguf`. Sharding is a property of a
+    // model too big for one file, and MLX repos publish
+    // `model-00001-of-00006.safetensors` for exactly the same reason. Stripping
+    // only `.gguf` made those six separate "builds" and picked the smallest —
+    // 752 MB of a 25.6 GB model, found pulling
+    // `igorvibes/Qwen3.8-27B-UD-Q6_K_XL-AWQ-MTP-mlx` on 2026-09-11. The gap
+    // could not show until MLX repos became recognisable at all that morning.
+    let stem = [".gguf", ".safetensors", ".npz"]
+        .iter()
+        .find_map(|ext| name.strip_suffix(ext))?;
     let (head, total) = stem.rsplit_once("-of-")?;
     let (stem, index) = head.rsplit_once('-')?;
     let total: u32 = total.parse().ok()?;
@@ -199,7 +208,7 @@ pub fn best_build(repo: &hf::Repo) -> Option<Build> {
 /// figure: the KV cache is exactly what it omits. `basis` carries that outward
 /// so the page can badge it, which is the difference between a refusal a user
 /// understands and one they meet cold.
-fn price_build(
+pub fn price_build(
     machine: &Machine,
     build: &Build,
     target_dir: Option<&std::path::Path>,
@@ -286,9 +295,12 @@ pub fn plan_add(
         }
     };
 
-    // At `add` the user *has* named something — this repo — so a declared base
-    // that canonicalises to something else is a real mismatch worth showing.
-    doc.provenance = provenance::check(repo.base_model.as_deref(), Some(repo_id));
+    // Against the repo's own NAME, not as though the repo id were a model the
+    // user asked for. A build's `base_model` points at its parent, and
+    // `provenance`'s own docstring records that comparing the two calls every
+    // correctly-labelled quantisation a mismatch. This call site was not
+    // following it, and said so out loud on 2026-09-11.
+    doc.provenance = provenance::check_repo(repo.base_model.as_deref(), repo_id);
     if doc.provenance.is_warning() {
         // Warns, does not refuse — the decision recorded in the plan's §6.
         doc.warnings.push(doc.provenance.message());
@@ -416,10 +428,16 @@ pub fn plan_add(
         // the loader's, which is correct and much narrower, and gating a pull
         // on it would refuse almost everything on a working machine.
         Some(f) if f.verdict == fit::Verdict::FitsDiskOnly => {
-            doc.warnings.push(format!(
-                "it will land, but nothing can load it as things stand: {}",
-                f.message()
-            ));
+            // "as things stand" is a promise that things can stand
+            // differently. Above the machine's own total it is a false one,
+            // and the difference is the whole of what the reader does next:
+            // free memory, or go and find a smaller build.
+            let lede = if f.beyond_machine() {
+                "it will land, but this machine can never load it"
+            } else {
+                "it will land, but nothing can load it as things stand"
+            };
+            doc.warnings.push(format!("{lede}: {}", f.message()));
             doc.outcome = AddOutcome::Planned;
         }
         Some(f) => doc.outcome = AddOutcome::Refused { reason: f.message() },

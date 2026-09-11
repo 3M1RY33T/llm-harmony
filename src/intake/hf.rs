@@ -86,7 +86,12 @@ impl Repo {
 /// the same pick without this and offered a 0.9 GB projector as a replacement
 /// for a 27B model — which is why the rule now lives on the file rather than
 /// in whichever module thought of it first.
-const NOT_A_BUILD: [&str; 2] = ["imatrix", "mmproj"];
+///
+/// `mtp` joined them 2026-09-11: `cdownard/Qwen-Qwen3.8-27B-MTPLX` publishes a
+/// 810 MB `mtp.safetensors` — a multi-token-prediction head — beside the three
+/// shards that are the model, and `siblings` offered the head as a replacement
+/// for a 27B.
+const NOT_A_BUILD: [&str; 3] = ["imatrix", "mmproj", "mtp"];
 
 impl RepoFile {
     /// A thing a provider would actually serve as a model.
@@ -94,8 +99,14 @@ impl RepoFile {
         if !matches!(self.format, Format::Gguf | Format::Mlx) {
             return false;
         }
+        // A delimited token, not a substring. `mtp` is three letters and would
+        // match inside a model's own name; `imatrix` and `mmproj` were safe by
+        // luck rather than by rule.
         let lower = self.name.to_ascii_lowercase();
-        !NOT_A_BUILD.iter().any(|marker| lower.contains(marker))
+        let base = lower.rsplit('/').next().unwrap_or(&lower);
+        !base
+            .split(['-', '_', '.'])
+            .any(|token| NOT_A_BUILD.contains(&token))
     }
 }
 

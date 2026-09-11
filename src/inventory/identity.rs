@@ -11,6 +11,42 @@ pub struct ModelIdentity {
     pub provenance: Provenance,
 }
 
+/// One token that says how a model was built, never which model it is.
+///
+/// Every marker here can come off a name without changing what the weights are
+/// a build *of*: the container (`gguf`, `mlx`), the quantisation and the method
+/// that produced it (`q4_k_m`, `iq2_xxs`, `awq`, `gptq`, `fp8`), the width
+/// (`4bit`), and the prediction head (`mtp`). Deliberately **not** anything
+/// that distinguishes two fine-tunes -- `inventory.md` section 5's trap is
+/// calling two different models one model, and the way in is stripping a word
+/// that carried meaning.
+fn is_decoration(token: &str) -> bool {
+    if matches!(
+        token,
+        "gguf" | "mlx" | "imatrix" | "awq" | "gptq" | "fp8" | "bnb" | "bitsandbytes"
+            | "bf16" | "fp16" | "f16" | "int4" | "int8" | "ud" | "mtp"
+    ) {
+        return true;
+    }
+    // `4bit`, `6bit`, `8bit`.
+    if let Some(width) = token.strip_suffix("bit") {
+        if !width.is_empty() && width.chars().all(|c| c.is_ascii_digit()) {
+            return true;
+        }
+    }
+    // `q8_0`, `q4_k_m`, `q6_k_xl`, `iq2_xxs`: a `q` or `iq`, a digit, then
+    // only the alphabet a quantisation name is written in.
+    let rest = token.strip_prefix("iq").or_else(|| token.strip_prefix('q'));
+    match rest {
+        Some(r) => {
+            let mut chars = r.chars();
+            chars.next().is_some_and(|c| c.is_ascii_digit())
+                && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+        }
+        None => false,
+    }
+}
+
 /// Strip everything that varies between builds of one model: publisher,
 /// extension, format tag, and quantisation.
 ///
@@ -27,23 +63,21 @@ pub fn canonical_name(raw: &str) -> String {
     for ext in [".gguf", ".safetensors", ".npz", ".json"] {
         s = s.trim_end_matches(ext).to_string();
     }
-    // Longest first, so `-mlx-6bit` is stripped before `-mlx`.
-    const DECORATION: [&str; 18] = [
-        "-mlx-4bit", "-mlx-6bit", "-mlx-8bit",
-        "-q2_k", "-q3_k_m", "-q4_k_m", "-q4_k_s", "-q5_k_m", "-q6_k", "-q8_0",
-        ".q4_k_m", ".q8_0",
-        "-4bit", "-6bit", "-8bit",
-        "-gguf", "-mlx", "-imatrix",
-    ];
-    let mut changed = true;
-    while changed {
-        changed = false;
-        for d in DECORATION {
-            if s.contains(d) {
-                s = s.replace(d, "");
-                changed = true;
-            }
-        }
+    // Decorations are stripped a hyphen-separated token at a time, not as
+    // substrings. A literal list of substrings lost this race as soon as
+    // quantisation names grew suffixes: `-q6_k` matched inside `-q6_k_xl` and
+    // left a `_xl` welded to the model name, so
+    // `Qwen3.8-27B-UD-Q6_K_XL-AWQ-MTP-mlx` canonicalised to
+    // `qwen3.8-27b-ud_xl-awq-mtp` and matched no other build of Qwen3.8-27B.
+    // Found 2026-09-11, on the repo that also proved `siblings` needed it.
+    s = s
+        .split('-')
+        .filter(|t| !t.is_empty() && !is_decoration(t))
+        .collect::<Vec<_>>()
+        .join("-");
+    // The dot-joined forms the token split cannot see: `model.Q4_K_M`.
+    for d in [".q4_k_m", ".q8_0", ".f16", ".bf16"] {
+        s = s.replace(d, "");
     }
     // Ollama tags: "nomic-embed-text:latest" -> "nomic-embed-text"
     if let Some((base, _tag)) = s.split_once(':') {
