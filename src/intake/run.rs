@@ -9,7 +9,7 @@ use serde::Serialize;
 
 use crate::http::Http;
 use crate::intake::{fit, hf, place, provenance};
-use crate::inventory::artifact::Format;
+use crate::inventory::artifact::{Format, Store};
 use crate::memory::Machine;
 use crate::provider::ProviderKind;
 
@@ -54,6 +54,11 @@ pub struct AddDoc {
     pub provider: String,
     pub store: Option<String>,
     pub target_dir: Option<String>,
+    /// The `hf.co/<repo>:<QUANT>` name, when this pull goes through Ollama's
+    /// own registry rather than a file drop. `None` for every other provider,
+    /// which is how a caller tells the two transports apart without matching
+    /// on the provider name.
+    pub registry_name: Option<String>,
     pub bytes: Option<u64>,
     pub provenance: provenance::Finding,
     /// Carried on the *result*, not only in the progress stream. A warning that
@@ -257,6 +262,7 @@ pub fn plan_add(
         provider: provider.as_str().to_string(),
         store: None,
         target_dir: None,
+        registry_name: None,
         bytes: None,
         provenance: provenance::Finding::Undeclared { expected: repo_id.to_string() },
         warnings: Vec::new(),
@@ -325,25 +331,51 @@ pub fn plan_add(
     doc.bytes = build.bytes;
     let first = &build.files[0];
 
-    let Some(store) = place::store_for(provider, first.format) else {
-        doc.outcome = AddOutcome::Refused {
-            reason: format!(
-                "{} cannot serve a {:?} file from a directory",
-                provider.as_str(),
-                first.format
-            ),
+    // Two transports, one admission. Ollama's store is a digest-keyed blob
+    // database written by its own `pull`, so there is no directory to place
+    // into — but that is a fact about how bytes move, not about whether the
+    // provider can serve the model, and `intake::ollama` bridges the repo id
+    // exactly rather than guessing at a name in Ollama's library.
+    let dir: std::path::PathBuf = if provider == ProviderKind::Ollama {
+        match crate::intake::ollama::transport_for(repo_id, &build) {
+            Ok(name) => doc.registry_name = Some(name),
+            Err(reason) => {
+                doc.outcome = AddOutcome::Refused { reason };
+                return doc;
+            }
+        }
+        doc.store = Some(Store::Ollama.as_str().to_string());
+        // Ollama writes where Ollama writes; the store root is only used to
+        // price the pull against the right filesystem.
+        let Some(root) = place::directory_for(Store::Ollama, "") else {
+            doc.outcome = AddOutcome::Refused {
+                reason: "ollama's store is not present on this machine".to_string(),
+            };
+            return doc;
         };
-        return doc;
-    };
-    doc.store = Some(store.as_str().to_string());
+        root
+    } else {
+        let Some(store) = place::store_for(provider, first.format) else {
+            doc.outcome = AddOutcome::Refused {
+                reason: format!(
+                    "{} cannot serve a {:?} file from a directory",
+                    provider.as_str(),
+                    first.format
+                ),
+            };
+            return doc;
+        };
+        doc.store = Some(store.as_str().to_string());
 
-    let Some(dir) = place::directory_for(store, repo_id) else {
-        doc.outcome = AddOutcome::Refused {
-            reason: format!("{}'s store is not present on this machine", store.as_str()),
+        let Some(dir) = place::directory_for(store, repo_id) else {
+            doc.outcome = AddOutcome::Refused {
+                reason: format!("{}'s store is not present on this machine", store.as_str()),
+            };
+            return doc;
         };
-        return doc;
+        doc.target_dir = Some(dir.display().to_string());
+        dir
     };
-    doc.target_dir = Some(dir.display().to_string());
 
     let fit = price_build(machine, &build, Some(&dir));
     doc.fit = fit.clone();

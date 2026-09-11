@@ -1448,6 +1448,50 @@ fn main() -> ExitCode {
             }
 
             // Past every refusal this verb can make. Only now do bytes move.
+            //
+            // Which way they move is the one thing the two transports do not
+            // share: Ollama takes the repo id through its own registry, every
+            // other provider takes a file drop into the store placement chose.
+            if let Some(name) = doc.registry_name.clone() {
+                let mut emit = |p: llm_harmony::intake::download::Progress| {
+                    if json {
+                        p.print();
+                    } else if let llm_harmony::intake::download::Progress::Advanced {
+                        bytes_done, ..
+                    } = p
+                    {
+                        eprintln!("  {}", llm_harmony::render::human_bytes(bytes_done));
+                    }
+                };
+                for w in &doc.warnings {
+                    if !json {
+                        eprintln!("! {w}");
+                    }
+                }
+                let argv = llm_harmony::intake::ollama::pull_argv(&name);
+                match llm_harmony::intake::ollama::run_pull(&argv, &mut emit) {
+                    Ok(()) => {
+                        doc.outcome =
+                            llm_harmony::intake::run::AddOutcome::Added { path: name.clone() };
+                        if json {
+                            println!("{}", serde_json::to_string_pretty(&doc).unwrap());
+                        } else {
+                            println!("added {name}");
+                        }
+                        return ExitCode::SUCCESS;
+                    }
+                    Err(e) => {
+                        doc.outcome =
+                            llm_harmony::intake::run::AddOutcome::Refused { reason: e.clone() };
+                        if json {
+                            println!("{}", serde_json::to_string_pretty(&doc).unwrap());
+                        } else {
+                            eprintln!("llm-harmony: {e}");
+                        }
+                        return ExitCode::FAILURE;
+                    }
+                }
+            }
             let dir = std::path::PathBuf::from(doc.target_dir.clone().unwrap_or_default());
             let agent = llm_harmony::intake::download::transfer_agent();
             let mut emit = |p: llm_harmony::intake::download::Progress| {

@@ -138,3 +138,139 @@ fn a_completed_download_is_renamed_into_place_atomically() {
     assert!(matches!(seen.first(), Some(Progress::Started { .. })));
     assert!(matches!(seen.last(), Some(Progress::Finished { .. })));
 }
+
+// --- Task 11: Ollama's transport (r27 Phase C) ------------------------------
+//
+// `add` refused Ollama outright, and the refusal was right about the wrong
+// thing: Ollama will not read a loose GGUF out of a directory, but that is a
+// statement about the *transport*, not about the provider. Its store is
+// content-addressed behind `ollama pull`, and Ollama pulls a GGUF repo straight
+// from Hugging Face under an `hf.co/…` name — so the bridge is exact rather
+// than a guess at a name in Ollama's own library.
+//
+// Admission does not move. Provenance is read and both ledgers are checked
+// before `ollama` is invoked at all: a second transport must not become a hole
+// in the first one's rules.
+
+use llm_harmony::intake::ollama as intake_ollama;
+use llm_harmony::intake::run::Build;
+
+fn build(files: &[(&str, Option<u64>)]) -> Build {
+    let files: Vec<hf::RepoFile> = files
+        .iter()
+        .map(|(n, s)| hf::RepoFile {
+            name: (*n).into(),
+            format: Format::from_path_str(n),
+            bits: llm_harmony::inventory::artifact::bits_from_name(n),
+            size_bytes: *s,
+        })
+        .collect();
+    let bytes = files.iter().try_fold(0u64, |acc, f| f.size_bytes.map(|b| acc + b));
+    Build { files, bytes }
+}
+
+#[test]
+fn an_ollama_target_is_planned_as_a_pull_rather_than_refused() {
+    // The old `store_for` answer stays correct and stops being the end of the
+    // road: there is no store to place into, and that is why there is a pull.
+    assert_eq!(place::store_for(ProviderKind::Ollama, Format::Gguf), None);
+    let t = intake_ollama::transport_for("unsloth/Qwen3.5-4B-GGUF", &build(&[("Qwen3.5-4B-Q4_K_M.gguf", Some(2))]));
+    assert_eq!(t.unwrap(), "hf.co/unsloth/Qwen3.5-4B-GGUF:Q4_K_M");
+}
+
+#[test]
+fn the_registry_name_carries_the_quantisation_the_user_chose() {
+    // Without the tag Ollama picks its own default, which is a different build
+    // from the one that was priced and admitted -- so the number the user was
+    // shown would describe a file they did not get.
+    let t = intake_ollama::transport_for("x/y-GGUF", &build(&[("y-Q8_0.gguf", Some(2))])).unwrap();
+    assert!(t.ends_with(":Q8_0"), "{t}");
+}
+
+#[test]
+fn a_build_with_no_quantisation_in_its_name_is_pulled_untagged() {
+    // Ollama's own default then applies. Inventing a tag would name a build
+    // that may not exist in the repo at all.
+    let t = intake_ollama::transport_for("x/y-GGUF", &build(&[("y.gguf", Some(2))])).unwrap();
+    assert_eq!(t, "hf.co/x/y-GGUF");
+}
+
+#[test]
+fn a_sharded_build_is_refused_for_ollama_by_name() {
+    // `hf.co/…` resolves to ONE file. A split build pulled through it is one
+    // shard wearing the whole build's name -- the exact failure `shard_of`
+    // exists to prevent on the download path.
+    let err = intake_ollama::transport_for(
+        "x/y-GGUF",
+        &build(&[
+            ("y-Q4_K_M-00001-of-00002.gguf", Some(2)),
+            ("y-Q4_K_M-00002-of-00002.gguf", Some(2)),
+        ]),
+    )
+    .unwrap_err();
+    assert!(err.contains("part"), "{err}");
+}
+
+#[test]
+fn an_mlx_build_is_refused_for_ollama_rather_than_pulled_as_a_gguf() {
+    // `hf.co/` is GGUF-only. Ollama serves MLX through its own backend, from
+    // its own library, which is not this repo id.
+    let err = intake_ollama::transport_for("x/y-MLX", &build(&[("model.safetensors", Some(2))]))
+        .unwrap_err();
+    assert!(err.contains("GGUF"), "{err}");
+}
+
+#[test]
+fn the_pull_command_names_the_model_and_nothing_else() {
+    assert_eq!(
+        intake_ollama::pull_argv("hf.co/x/y:Q4_K_M"),
+        vec!["ollama", "pull", "hf.co/x/y:Q4_K_M"]
+    );
+}
+
+#[test]
+fn a_missing_ollama_binary_is_reported_rather_than_skipped() {
+    // The rule `adapters/lmstudio.rs` already states for `lms`: a missing
+    // binary is a named failure, never a silent no-op, or harmony reports a
+    // pull it never performed.
+    let mut seen: Vec<Progress> = Vec::new();
+    let err = intake_ollama::run_pull(
+        &["definitely-not-ollama".into(), "pull".into(), "m".into()],
+        &mut |p| seen.push(p),
+    )
+    .unwrap_err();
+    assert!(err.to_lowercase().contains("path"), "{err}");
+}
+
+#[test]
+fn an_ollama_pull_emits_the_same_progress_documents_as_a_download() {
+    // Same contract, so a caller polling a job never special-cases the
+    // provider: one document per line, `started` first and a terminal event
+    // last. `sh` stands in for `ollama` so the shape is asserted without
+    // pulling gigabytes.
+    let mut seen: Vec<Progress> = Vec::new();
+    let script = "printf 'pulling manifest\\n'; printf 'pulling 1a2b3c... 50%% 1.0 GB/2.0 GB\\n'; printf 'success\\n'";
+    intake_ollama::run_pull(
+        &["sh".into(), "-c".into(), script.into()],
+        &mut |p| seen.push(p),
+    )
+    .unwrap();
+
+    assert!(matches!(seen.first(), Some(Progress::Started { .. })), "{seen:?}");
+    assert!(matches!(seen.last(), Some(Progress::Finished { .. })), "{seen:?}");
+    assert!(
+        seen.iter().any(|p| matches!(p, Progress::Advanced { .. })),
+        "a percentage line becomes an Advanced event: {seen:?}"
+    );
+}
+
+#[test]
+fn a_failing_pull_is_an_error_and_not_a_silent_success() {
+    let mut seen: Vec<Progress> = Vec::new();
+    let err = intake_ollama::run_pull(
+        &["sh".into(), "-c".into(), "printf 'Error: file does not exist\\n' >&2; exit 1".into()],
+        &mut |p| seen.push(p),
+    )
+    .unwrap_err();
+    assert!(err.contains("does not exist"), "the reason survives: {err}");
+}
