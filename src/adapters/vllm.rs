@@ -24,6 +24,10 @@ impl Vllm {
     }
 }
 
+/// This provider's own limit, named in every refusal so the operator learns
+/// the lever that does exist.
+const CEILING: &str = "memory_budget_gb";
+
 impl Adapter for Vllm {
     fn kind(&self) -> ProviderKind {
         ProviderKind::Vllm
@@ -71,6 +75,32 @@ impl Adapter for Vllm {
     /// prefix cache, not residency. Eviction is internal policy,
     /// bounded by `memory_budget_gb`.
     fn actuation(&self) -> Actuation {
-        Actuation::SelfManaged { ceiling: "memory_budget_gb" }
+        Actuation::SelfManaged { ceiling: CEILING }
+    }
+
+    fn load(
+        &self,
+        _http: &Http,
+        _base: &str,
+        _request: &crate::provider::LoadRequest,
+    ) -> Result<(), crate::provider::ActuateError> {
+        // No network call: there is no endpoint to reach, and a timeout would
+        // misreport "cannot" as "did not answer".
+        Err(crate::provider::ActuateError::NotSupported { ceiling: CEILING })
+    }
+
+    fn unload(
+        &self,
+        _http: &Http,
+        _base: &str,
+        _model: &str,
+    ) -> Result<(), crate::provider::ActuateError> {
+        Err(crate::provider::ActuateError::NotSupported { ceiling: CEILING })
+    }
+
+    /// vLLM-MLX publishes queue depth nowhere a per-model answer can be read
+    /// from. Unknown, which every caller must read as busy.
+    fn busy(&self, _http: &Http, _base: &str, _model: &str) -> Result<bool, ProbeError> {
+        Err(ProbeError::Malformed { reason: "vLLM-MLX publishes no per-model request state".into() })
     }
 }

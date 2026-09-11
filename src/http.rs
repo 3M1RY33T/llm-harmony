@@ -28,6 +28,20 @@ impl Http {
                 reason: format!("not JSON: {e}"),
             })
     }
+
+    /// POST a JSON body. Used only on the control plane -- `keep_alive` to
+    /// Ollama, and the sentinel warm-up -- never to carry a prompt.
+    pub fn post_json(
+        &self,
+        url: &str,
+        body: &serde_json::Value,
+    ) -> Result<serde_json::Value, ProbeError> {
+        let mut response = self.agent.post(url).send_json(body).map_err(map_err)?;
+        response
+            .body_mut()
+            .read_json::<serde_json::Value>()
+            .map_err(|e| ProbeError::Malformed { reason: format!("not JSON: {e}") })
+    }
 }
 
 fn map_err(e: ureq::Error) -> ProbeError {

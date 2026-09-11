@@ -37,6 +37,10 @@ fn model_arg(m: &serde_json::Value) -> Option<String> {
     Some(args.get(i + 1)?.as_str()?.to_string())
 }
 
+/// This provider's own limit, named in every refusal so the operator learns
+/// the lever that does exist.
+const CEILING: &str = "max_instances";
+
 impl Adapter for LlamaCpp {
     fn kind(&self) -> ProviderKind {
         ProviderKind::LlamaCpp
@@ -82,6 +86,32 @@ impl Adapter for LlamaCpp {
     /// self-manages -- `models_autoload: true`, `max_instances: 1` --
     /// so loading a second model is what evicts the first.
     fn actuation(&self) -> Actuation {
-        Actuation::SelfManaged { ceiling: "max_instances" }
+        Actuation::SelfManaged { ceiling: CEILING }
+    }
+
+    fn load(
+        &self,
+        _http: &Http,
+        _base: &str,
+        _request: &crate::provider::LoadRequest,
+    ) -> Result<(), crate::provider::ActuateError> {
+        // No network call: there is no endpoint to reach, and a timeout would
+        // misreport "cannot" as "did not answer".
+        Err(crate::provider::ActuateError::NotSupported { ceiling: CEILING })
+    }
+
+    fn unload(
+        &self,
+        _http: &Http,
+        _base: &str,
+        _model: &str,
+    ) -> Result<(), crate::provider::ActuateError> {
+        Err(crate::provider::ActuateError::NotSupported { ceiling: CEILING })
+    }
+
+    /// The router publishes no per-model request state -- `/running` 404s,
+    /// verified 2026-09-10. Unknown, which every caller must read as busy.
+    fn busy(&self, _http: &Http, _base: &str, _model: &str) -> Result<bool, ProbeError> {
+        Err(ProbeError::Malformed { reason: "llama.cpp publishes no request state".into() })
     }
 }

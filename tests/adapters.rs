@@ -330,3 +330,158 @@ fn only_a_model_level_provider_can_unload() {
     assert!(LmStudio.actuation().can_unload());
     assert!(!LlamaCpp.actuation().can_unload());
 }
+
+// --- Load and unload (slice 5, Task 6) ---
+
+use llm_harmony::provider::{ActuateError, LoadRequest};
+
+/// A self-managed provider refuses in a way that names the lever that does
+/// exist, so an operator is never told only what harmony cannot do.
+#[test]
+fn a_self_managed_provider_refuses_unload_and_names_its_ceiling() {
+    match LlamaCpp.unload(&http(), "http://127.0.0.1:1", "any-model") {
+        Err(ActuateError::NotSupported { ceiling }) => assert_eq!(ceiling, "max_instances"),
+        other => panic!("{other:?}"),
+    }
+    match Vllm.unload(&http(), "http://127.0.0.1:1", "any-model") {
+        Err(ActuateError::NotSupported { ceiling }) => assert_eq!(ceiling, "memory_budget_gb"),
+        other => panic!("{other:?}"),
+    }
+}
+
+/// And refuses without touching the network: there is no endpoint to call, and
+/// a timeout would misreport "cannot" as "did not answer".
+#[test]
+fn a_self_managed_refusal_does_not_touch_the_network() {
+    let started = std::time::Instant::now();
+    let _ = LlamaCpp.load(
+        &http(),
+        // A port nothing is listening on: reaching it would cost a timeout.
+        "http://127.0.0.1:1",
+        &LoadRequest { model: "m".into(), context_tokens: None },
+    );
+    assert!(started.elapsed() < Duration::from_millis(100), "it dialled out");
+}
+
+/// Ollama drops a model by asking for it with keep_alive 0.
+#[test]
+fn ollama_unloads_by_asking_for_a_zero_keep_alive() {
+    let seen = support::RecordingServer::start();
+    Ollama.unload(&http(), &seen.base_url(), "qwen3:14b").unwrap();
+
+    let req = seen.last_request();
+    assert_eq!(req.method, "POST");
+    assert_eq!(req.path, "/api/generate");
+    assert_eq!(req.json["model"], "qwen3:14b");
+    assert_eq!(req.json["keep_alive"], 0);
+    assert_eq!(req.json["prompt"], "", "never carry content: docs/architecture.md");
+}
+
+/// And loads by asking for it with a keep_alive that is not zero. Same
+/// endpoint, opposite intent -- which is the whole of Ollama's control plane.
+#[test]
+fn ollama_loads_by_asking_for_a_nonzero_keep_alive() {
+    let seen = support::RecordingServer::start();
+    Ollama
+        .load(&http(), &seen.base_url(), &LoadRequest { model: "qwen3:14b".into(), context_tokens: Some(8192) })
+        .unwrap();
+
+    let req = seen.last_request();
+    assert_eq!(req.path, "/api/generate");
+    assert_ne!(req.json["keep_alive"], 0);
+    assert_eq!(req.json["prompt"], "");
+    assert_eq!(req.json["options"]["num_ctx"], 8192, "the window is most of the estimate");
+}
+
+/// LM Studio is driven by its CLI -- the only control verb it exposes. The
+/// requested window must reach it, because the window is most of the estimate.
+#[test]
+fn lmstudio_load_passes_the_requested_context_to_the_cli() {
+    let argv = LmStudio::load_argv(&LoadRequest {
+        model: "qwen3-14b".into(),
+        context_tokens: Some(8192),
+    });
+    assert_eq!(argv, vec!["lms", "load", "qwen3-14b", "--yes", "--context-length", "8192"]);
+}
+
+/// Without a window, none is passed: LM Studio's own default is a better
+/// guess than any this project could invent.
+#[test]
+fn lmstudio_load_omits_the_window_when_none_was_asked_for() {
+    let argv = LmStudio::load_argv(&LoadRequest { model: "m".into(), context_tokens: None });
+    assert_eq!(argv, vec!["lms", "load", "m", "--yes"]);
+}
+
+#[test]
+fn lmstudio_unload_names_the_model() {
+    assert_eq!(LmStudio::unload_argv("qwen3-14b"), vec!["lms", "unload", "qwen3-14b"]);
+}
+
+/// Verified live 2026-09-11: `/api/generate` answers HTTP 400 for an embedding
+/// model -- `"nomic-embed-text:latest" does not support generate` -- so there
+/// is no one endpoint that loads everything Ollama serves. The server is asked
+/// which it is.
+#[test]
+fn ollama_loads_an_embedding_model_through_the_embed_endpoint() {
+    let mut canned = std::collections::HashMap::new();
+    canned.insert("/api/show".to_string(), r#"{"capabilities":["embedding"]}"#.to_string());
+    let seen = support::RecordingServer::start_with(canned);
+
+    Ollama
+        .load(
+            &http(),
+            &seen.base_url(),
+            &LoadRequest { model: "nomic-embed-text:latest".into(), context_tokens: None },
+        )
+        .unwrap();
+
+    let req = seen.last_request();
+    assert_eq!(req.path, "/api/embed");
+    assert_eq!(req.json["input"], "", "a control call carries no content");
+    assert_ne!(req.json["keep_alive"], 0);
+}
+
+/// And a model that can generate keeps the generate path.
+#[test]
+fn ollama_loads_a_chat_model_through_the_generate_endpoint() {
+    let mut canned = std::collections::HashMap::new();
+    canned.insert("/api/show".to_string(), r#"{"capabilities":["completion","tools"]}"#.to_string());
+    let seen = support::RecordingServer::start_with(canned);
+
+    Ollama
+        .load(&http(), &seen.base_url(), &LoadRequest { model: "qwen3:14b".into(), context_tokens: None })
+        .unwrap();
+
+    assert_eq!(seen.last_request().path, "/api/generate");
+}
+
+/// LM Studio starts a SECOND instance when told to load an already-resident
+/// model -- `<model>:2`, with its own weights and KV cache -- and
+/// `lms unload <model>` then removes only the first. Verified live
+/// 2026-09-11. A silent doubling is the failure this project exists to
+/// prevent, so the adapter refuses to create one.
+#[test]
+fn lmstudio_load_is_a_no_op_when_the_model_is_already_resident() {
+    let body = fixture("lmstudio/models-one-loaded.json");
+    let s = support::StubServer::start_lmstudio_style(support::routes(&[(
+        "/api/v0/models",
+        &body,
+    )]));
+    let loaded = LmStudio
+        .list(&http(), &s.base_url())
+        .unwrap()
+        .into_iter()
+        .find(|m| m.state == State::Loaded)
+        .expect("the fixture has a resident model");
+
+    // Would shell out to `lms` and create a duplicate if the guard were absent;
+    // `lms` is not reachable from the test environment's PATH assumptions, so a
+    // spawn would surface as an error rather than silently passing.
+    LmStudio
+        .load(
+            &http(),
+            &s.base_url(),
+            &LoadRequest { model: loaded.id.clone(), context_tokens: Some(4096) },
+        )
+        .expect("already resident is success, not a second instance");
+}

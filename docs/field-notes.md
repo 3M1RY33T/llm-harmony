@@ -129,6 +129,54 @@ can account for but never act on"* — so the design survived; the table did not
 server, not by its presence in a README. `llm-harmony verify` prints the probed
 answer so this table never has to be trusted from memory again.
 
+### Loading an already-loaded model doubles it
+
+Found 2026-09-11, the first time anything called `lms load` twice. LM Studio
+does **not** treat a load of a resident model as a no-op — it starts a second
+instance, with its own weights and its own KV cache:
+
+```
+$ lms load text-embedding-nomic-embed-text-v1.5 --context-length 2048
+$ lms load text-embedding-nomic-embed-text-v1.5 --context-length 4096
+$ lms ps
+text-embedding-nomic-embed-text-v1.5     ctx 2048
+text-embedding-nomic-embed-text-v1.5:2   ctx 4096     <- both resident
+
+$ lms unload text-embedding-nomic-embed-text-v1.5
+$ lms ps
+text-embedding-nomic-embed-text-v1.5:2   ctx 4096     <- and unload took one
+```
+
+Two consequences, and the second is worse:
+
+- **A redundant load silently doubles a model's cost.** On 24 GB, issuing the
+  same load twice is how the machine ends up swapping — the exact failure this
+  project exists to prevent.
+- **`lms unload <model>` unloads an instance, not a model.** The command exits
+  **0** and reports `Model "..." unloaded` while the `:2` instance stays
+  resident. An actuation that reports success and changes nothing is the same
+  shape as *failure reported inside a 200*, one plane further in.
+
+So: the adapter refuses to load a model it can see is resident, and **no
+actuation may be trusted by its exit code** — residency is confirmed by
+re-reading `list`, always.
+
+### Ollama has no single endpoint that loads everything it serves
+
+Also 2026-09-11. `POST /api/generate` with an empty prompt is the documented
+way to make a model resident, and it answers **HTTP 400** for an embedding
+model:
+
+```
+{"error":"\"nomic-embed-text:latest\" does not support generate"}
+```
+
+`/api/show` publishes `capabilities` (`["embedding"]` vs `["completion", ...]`),
+and `/api/embed` with an empty input loads the embedding models. So the adapter
+asks which endpoint applies rather than assuming one. A failed lookup falls back
+to `/api/generate`: it is the common case, and a wrong guess costs a visible 400
+rather than a silent no-op.
+
 ### A measurement taken while swapping is not a measurement
 
 Found 2026-09-11, calibrating the computed estimator against the corpus. Every

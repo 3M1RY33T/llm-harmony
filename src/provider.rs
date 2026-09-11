@@ -172,6 +172,69 @@ pub trait Adapter: Send + Sync {
 
     /// What this adapter may do beyond observing. Verified, not declared.
     fn actuation(&self) -> Actuation;
+
+    /// Make this model resident, at the window asked for.
+    ///
+    /// Returns once the provider has accepted the instruction; residency is
+    /// confirmed by re-reading `list`, never by trusting this to have worked.
+    fn load(
+        &self,
+        http: &crate::http::Http,
+        base: &str,
+        request: &LoadRequest,
+    ) -> Result<(), ActuateError>;
+
+    /// Make this model not resident.
+    fn unload(
+        &self,
+        http: &crate::http::Http,
+        base: &str,
+        model: &str,
+    ) -> Result<(), ActuateError>;
+
+    /// Is a request in flight against this model?
+    ///
+    /// An `Err` means the provider could not say, and **every caller must treat
+    /// that as busy**: the slice's constraints forbid evicting a model that is
+    /// serving, so an unknown may never read as free.
+    fn busy(
+        &self,
+        http: &crate::http::Http,
+        base: &str,
+        model: &str,
+    ) -> Result<bool, ProbeError>;
+}
+
+/// What to load, and how much window to give it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoadRequest {
+    pub model: String,
+    /// `None` leaves the provider's own default alone -- a better guess than
+    /// any this project could invent.
+    pub context_tokens: Option<u32>,
+}
+
+#[derive(Debug)]
+pub enum ActuateError {
+    /// This provider has no model-level verb. Carries the ceiling that bounds
+    /// it instead, so the caller can say something useful rather than only
+    /// what harmony cannot do.
+    NotSupported { ceiling: &'static str },
+    Failed { reason: String },
+    Timeout { after_s: u64 },
+}
+
+impl std::fmt::Display for ActuateError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ActuateError::NotSupported { ceiling } => write!(
+                f,
+                "this provider has no model-level unload; it self-manages under {ceiling}"
+            ),
+            ActuateError::Failed { reason } => write!(f, "{reason}"),
+            ActuateError::Timeout { after_s } => write!(f, "timed out after {after_s}s"),
+        }
+    }
 }
 
 #[cfg(test)]

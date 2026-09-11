@@ -70,4 +70,102 @@ impl Adapter for LmStudio {
     fn actuation(&self) -> Actuation {
         Actuation::ModelLevel
     }
+
+    /// LM Studio's REST API has no load or unload route; `lms` is the whole
+    /// control plane. So harmony shells out -- and the binary being findable
+    /// on PATH is therefore a hard dependency of eviction on this provider.
+    fn load(
+        &self,
+        http: &Http,
+        base: &str,
+        request: &crate::provider::LoadRequest,
+    ) -> Result<(), crate::provider::ActuateError> {
+        // Loading an already-resident model does not no-op: LM Studio starts a
+        // SECOND instance, identifier `<model>:2`, with its own weights and its
+        // own KV cache, and `lms unload <model>` then removes only the first.
+        // Verified 2026-09-11. On a 24 GB machine that is a silent doubling --
+        // the exact failure this project exists to prevent -- so the cost of
+        // one extra read here is not a question.
+        if self.is_resident(http, base, &request.model) {
+            return Ok(());
+        }
+        run(&LmStudio::load_argv(request))
+    }
+
+    fn unload(
+        &self,
+        _http: &Http,
+        _base: &str,
+        model: &str,
+    ) -> Result<(), crate::provider::ActuateError> {
+        run(&LmStudio::unload_argv(model))
+    }
+
+    /// `/api/v0/models` carries `state` but nothing about in-flight requests.
+    /// Unknown, which every caller must read as busy.
+    fn busy(&self, _http: &Http, _base: &str, _model: &str) -> Result<bool, ProbeError> {
+        Err(ProbeError::Malformed { reason: "LM Studio publishes no request state".into() })
+    }
+
+}
+
+impl LmStudio {
+    /// Is this model already loaded?
+    ///
+    /// An unreadable provider answers `false`: refusing to load because the
+    /// list could not be read would make a transient blip look like a
+    /// permanent refusal, and the duplicate-instance trap it guards against
+    /// is only reachable when the model really is resident.
+    fn is_resident(&self, http: &Http, base: &str, model: &str) -> bool {
+        self.list(http, base)
+            .map(|ms| ms.iter().any(|m| m.id == model && m.state == State::Loaded))
+            .unwrap_or(false)
+    }
+
+    /// Split out as a pure function so the argv is testable without spawning.
+    /// `--yes` because an interactive disambiguation prompt would hang a
+    /// non-interactive caller forever.
+    pub fn load_argv(request: &crate::provider::LoadRequest) -> Vec<String> {
+        let mut argv = vec![
+            BINARY.to_string(),
+            "load".to_string(),
+            request.model.clone(),
+            "--yes".to_string(),
+        ];
+        if let Some(ctx) = request.context_tokens {
+            argv.push("--context-length".to_string());
+            argv.push(ctx.to_string());
+        }
+        argv
+    }
+
+    pub fn unload_argv(model: &str) -> Vec<String> {
+        vec![BINARY.to_string(), "unload".to_string(), model.to_string()]
+    }
+}
+
+/// LM Studio's CLI, as installed at ~/.lmstudio/bin/lms.
+const BINARY: &str = "lms";
+
+/// A missing binary is a named failure, never a silent no-op: harmony would
+/// otherwise report an eviction it never performed.
+fn run(argv: &[String]) -> Result<(), crate::provider::ActuateError> {
+    use crate::provider::ActuateError;
+
+    let out = std::process::Command::new(&argv[0]).args(&argv[1..]).output();
+    match out {
+        Ok(o) if o.status.success() => Ok(()),
+        Ok(o) => Err(ActuateError::Failed {
+            reason: format!(
+                "`{}` exited {}: {}",
+                argv.join(" "),
+                o.status.code().unwrap_or(-1),
+                String::from_utf8_lossy(&o.stderr).trim()
+            ),
+        }),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(ActuateError::Failed {
+            reason: format!("`{BINARY}` is not on PATH; LM Studio has no other control surface"),
+        }),
+        Err(e) => Err(ActuateError::Failed { reason: e.to_string() }),
+    }
 }

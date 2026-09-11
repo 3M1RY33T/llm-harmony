@@ -1,8 +1,8 @@
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 /// A canned-response HTTP server. Routes map a request path to
@@ -88,4 +88,104 @@ pub fn routes(pairs: &[(&str, &str)]) -> HashMap<String, (u16, String)> {
         .map(|(p, b)| (p.to_string(), (200u16, b.to_string())))
         .collect()
 }
+
+/// A stub that remembers what it was asked, for testing the verbs that *write*.
+/// `StubServer` proves an adapter reads a body correctly; this one proves it
+/// sent the right one.
+pub struct RecordingServer {
+    port: u16,
+    stop: Arc<AtomicBool>,
+    seen: Arc<Mutex<Vec<Request>>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Request {
+    pub method: String,
+    pub path: String,
+    pub json: serde_json::Value,
+}
+
+impl RecordingServer {
+    pub fn start() -> Self {
+        Self::start_with(HashMap::new())
+    }
+
+    /// Canned bodies for paths the adapter reads before it writes -- Ollama
+    /// asks `/api/show` what a model can do before choosing an endpoint.
+    pub fn start_with(canned: HashMap<String, String>) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        let port = listener.local_addr().unwrap().port();
+        let stop = Arc::new(AtomicBool::new(false));
+        let seen: Arc<Mutex<Vec<Request>>> = Arc::new(Mutex::new(Vec::new()));
+
+        let (stop_t, seen_t) = (stop.clone(), seen.clone());
+        thread::spawn(move || {
+            for stream in listener.incoming() {
+                if stop_t.load(Ordering::Relaxed) {
+                    break;
+                }
+                let Ok(stream) = stream else { continue };
+                record(stream, &seen_t, &canned);
+            }
+        });
+
+        RecordingServer { port, stop, seen }
+    }
+
+    pub fn base_url(&self) -> String {
+        format!("http://127.0.0.1:{}", self.port)
+    }
+
+    pub fn last_request(&self) -> Request {
+        self.seen.lock().unwrap().last().cloned().expect("a request was made")
+    }
+}
+
+impl Drop for RecordingServer {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        let _ = std::net::TcpStream::connect(("127.0.0.1", self.port));
+    }
+}
+
+fn record(
+    mut stream: TcpStream,
+    seen: &Arc<Mutex<Vec<Request>>>,
+    canned: &HashMap<String, String>,
+) {
+    let mut reader = BufReader::new(stream.try_clone().unwrap());
+    let mut line = String::new();
+    if reader.read_line(&mut line).is_err() {
+        return;
+    }
+    let mut parts = line.split_whitespace();
+    let method = parts.next().unwrap_or("GET").to_string();
+    let path = parts.next().unwrap_or("/").to_string();
+
+    let mut len = 0usize;
+    loop {
+        let mut header = String::new();
+        if reader.read_line(&mut header).is_err() || header.trim().is_empty() {
+            break;
+        }
+        if let Some(v) = header.to_ascii_lowercase().strip_prefix("content-length:") {
+            len = v.trim().parse().unwrap_or(0);
+        }
+    }
+    let mut body = vec![0u8; len];
+    if len > 0 {
+        let _ = reader.read_exact(&mut body);
+    }
+    let json = serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null);
+    seen.lock().unwrap().push(Request { method, path: path.clone(), json });
+
+    let body = canned.get(&path).cloned().unwrap_or_else(|| "{}".to_string());
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let _ = stream.write_all(response.as_bytes());
+    let _ = stream.flush();
+}
+
 pub mod tree;
